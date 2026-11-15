@@ -1,0 +1,14 @@
+[package]
+name = "whisper-lite"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal whisper.cpp (v1.9.5) build that reuses llama.cpp's ggml from llama-cpp-sys-2"
+license = "MIT"
+links = "whisper_lite"
+
+[dependencies]
+# Only here so build.rs receives DEP_LLAMA_GGML_CMAKE_DIR (the shared ggml build).
+llama-cpp-sys-2 = { version = "=0.1.161", default-features = false }
+
+[build-dependencies]
+cc = "1"
