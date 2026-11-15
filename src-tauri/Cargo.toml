@@ -1,0 +1,48 @@
+[package]
+name = "self-manager"
+version = "0.1.0"
+edition = "2021"
+description = "Personal manager (memo, tasks, ledger, goals, diary, daily, calendar, work)"
+
+[lib]
+name = "self_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["ai"]
+# On-device AI: whisper.cpp speech-to-text + llama.cpp summarization, sharing
+# one ggml. Disable with --no-default-features when no C/C++ toolchain exists.
+ai = ["dep:llama-cpp-2", "dep:whisper-lite"]
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "fs"] }
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+thiserror = "2"
+hound = "3.5"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "wav", "flac", "ogg", "vorbis", "pcm"] }
+urlencoding = "2"
+futures-util = "0.3"
+llama-cpp-2 = { version = "=0.1.161", default-features = false, features = ["android-shared-stdcxx"], optional = true }
+whisper-lite = { path = "crates/whisper-lite", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+

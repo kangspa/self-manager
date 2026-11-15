@@ -1,0 +1,3 @@
+# Build environment for whisper.cpp (stt feature) on Windows.
+[env]
+LIBCLANG_PATH = "C:/Program Files/LLVM/bin"
