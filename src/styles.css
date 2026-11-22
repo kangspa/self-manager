@@ -413,3 +413,7 @@ a.btn { text-decoration: none; color: inherit; }
   .ai-note-head b { flex: 1 1 60%; }
   .ai-note-preview { padding-left: 12px; }
 }
+
+/* A settings card that cannot be used yet (e.g. auto backup before Google login). */
+.card.is-disabled > :not(.section-title) { opacity: 0.5; }
+.card.is-disabled input:disabled, .card.is-disabled label:has(input:disabled) { cursor: not-allowed; }

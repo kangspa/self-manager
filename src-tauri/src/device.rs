@@ -21,6 +21,10 @@ pub struct GoogleConfig {
     pub email: Option<String>,
     /// Android: whether the user completed the authorization flow once.
     pub authorized: bool,
+    /// Bumped by every login. Work that began in one session changes the
+    /// session (stores a token, ends it) only while this is unchanged, so it
+    /// never undoes a newer login - not even one as the same account.
+    pub session: u64,
 }
 
 /// On-device summary model (GGUF file name in models/llm). Empty = none chosen.
@@ -68,6 +72,11 @@ pub struct DeviceConfig {
     /// SelfManager/files: attachment bytes, one Drive file per sha256.
     pub drive_files_folder_id: Option<String>,
     pub drive_file_id: Option<String>,
+    /// Bumped whenever the Drive state above is reset for another account.
+    /// Work that started before (a status check, a file sync) records what it
+    /// found only while this is unchanged, so it never brings back the old
+    /// account's ids.
+    pub drive_epoch: u64,
     /// Local `last_modified` value at the moment local and Drive were last identical.
     /// If the live DB has changed since, an auto-load would discard those edits.
     pub synced_local_modified: Option<i64>,

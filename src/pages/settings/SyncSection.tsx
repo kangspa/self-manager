@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, DeviceSettings, onChange, SyncStatus } from "../../lib/api";
 import { fmtTs } from "../../lib/date";
-import { confirmDialog, Field, run, toast } from "../../components/ui";
+import { confirmDialog, run, toast } from "../../components/ui";
 import { describe } from "../../components/SyncConflict";
 import FileSyncCard from "./FileSyncCard";
 
@@ -14,21 +15,53 @@ export default function SyncSection() {
   const [st, setSt] = useState<SyncStatus | null>(null);
   const [dev, setDev] = useState<DeviceSettings | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [cid, setCid] = useState("");
-  const [secret, setSecret] = useState("");
 
-  const load = useCallback(async (withDrive: boolean) => {
-    const [s, d] = await Promise.all([api.syncStatus(withDrive).catch((e) => (toast(String(e), "error"), null)), api.deviceSettings()]);
-    // Without a Drive query keep the last known Drive info on screen.
-    if (s) setSt((p) => (withDrive || !p ? s : { ...s, drive: p.drive, drive_error: p.drive_error }));
-    setDev(d);
-    setCid(d.google.client_id);
+  // Requests finish out of order (a Drive query is slow, the others are not),
+  // so each part of the screen takes only its newest answer: the status from
+  // the newest request, the Drive info from the newest Drive query - and Drive
+  // info only from the same login as the status shown.
+  const cur = useRef<SyncStatus | null>(null);
+  const issued = useRef(0);
+  const shown = useRef(0);
+  const driveShown = useRef(0);
+  const devShown = useRef(0);
+  const show = useCallback((n: number, s: SyncStatus, withDrive: boolean) => {
+    const p = cur.current;
+    let next = s;
+    if (n > shown.current) shown.current = n;
+    else if (p) next = p;
+    const driveFrom = withDrive && n > driveShown.current && s.session === next.session ? s : p && p.session === next.session ? p : null;
+    if (driveFrom === s) driveShown.current = n;
+    next = { ...next, drive: driveFrom?.drive ?? null, drive_error: driveFrom?.drive_error ?? null };
+    cur.current = next;
+    setSt(next);
   }, []);
+  const load = useCallback(async (withDrive: boolean) => {
+    const n = ++issued.current;
+    const [s, d] = await Promise.all([api.syncStatus(withDrive).catch((e) => (toast(String(e), "error"), null)), api.deviceSettings()]);
+    if (s) show(n, s, withDrive);
+    // Only requests that read the device settings count here (the light ones
+    // on DB changes do not), so the first answer always lands.
+    if (n > devShown.current) {
+      devShown.current = n;
+      setDev(d);
+    }
+  }, [show]);
   useEffect(() => {
     load(true);
+    // The session can end in the background (expired login during an auto
+    // sync): show the logged-out state and the 구글 로그인 button right away.
+    const ended = listen("google-session-ended", () => load(false));
     // Keep the "자동 저장" time live while this screen is open.
-    return onChange(() => api.syncStatus(false).then((s) => setSt((p) => (p ? { ...s, drive: p.drive, drive_error: p.drive_error } : s))));
-  }, [load]);
+    const off = onChange(() => {
+      const n = ++issued.current;
+      api.syncStatus(false).then((s) => show(n, s, false));
+    });
+    return () => {
+      off();
+      ended.then((f) => f());
+    };
+  }, [load, show]);
 
   const act = async (key: string, fn: () => Promise<unknown>, ok: string) => {
     setBusy(key);
@@ -97,14 +130,14 @@ export default function SyncSection() {
 
       <FileSyncCard loggedIn={st.logged_in} />
 
-      <div className="card section">
+      <div className={`card section ${st.logged_in ? "" : "is-disabled"}`} aria-disabled={!st.logged_in}>
         <div className="section-title">자동 백업·로드 {!st.logged_in && <span className="badge">구글 로그인 후 사용 가능</span>}</div>
         <label className="row" style={{ marginBottom: 8 }}>
-          <input type="checkbox" disabled={!st.logged_in} checked={st.auto_backup} onChange={(e) => act("auto", () => api.setAuto(e.target.checked, st.auto_load), "")} />
+          <input type="checkbox" disabled={!st.logged_in || !!busy} checked={st.logged_in && st.auto_backup} onChange={(e) => act("auto", () => api.setAuto(e.target.checked, st.auto_load), "")} />
           <span><b>자동 백업</b> — {android ? "앱이 백그라운드로 갈 때(뒤로 가기·홈 버튼)" : "창의 X 버튼으로 닫을 때"} 바뀐 내용이 있으면 드라이브에 올립니다</span>
         </label>
         <label className="row">
-          <input type="checkbox" disabled={!st.logged_in} checked={st.auto_load} onChange={(e) => act("auto", () => api.setAuto(st.auto_backup, e.target.checked), "")} />
+          <input type="checkbox" disabled={!st.logged_in || !!busy} checked={st.logged_in && st.auto_load} onChange={(e) => act("auto", () => api.setAuto(st.auto_backup, e.target.checked), "")} />
           <span><b>자동 로드</b> — {android ? "앱을 켤 때와 다시 돌아올 때" : "프로그램을 켤 때"} 드라이브의 최신 내용을 가져옵니다</span>
         </label>
         <div className="notice" style={{ marginTop: 10 }}>
@@ -115,28 +148,16 @@ export default function SyncSection() {
       </div>
 
       <div className="card section" id="google">
-        <div className="section-title">구글 연동 {st.email && <span className="badge ok">{st.email}</span>}</div>
-        {!android && (
-          <>
-            <p className="muted small" style={{ marginTop: 0 }}>
-              {dev.google.env_client
-                ? <>빌드할 때 <code>.env</code>의 <code>GOOGLE_CLIENT_ID</code>{dev.google.env_secret ? "와 보안 비밀" : ""}이 들어가 있어 입력하지 않아도 됩니다. 아래 칸은 이 기기에서만 다른 클라이언트를 쓸 때 채우세요.</>
-                : <>Google Cloud 콘솔에서 OAuth 클라이언트를 만든 뒤 ID와 보안 비밀을 넣으세요.</>}
-              {" "}클라이언트 유형은 반드시 <b>데스크톱 앱</b>이어야 합니다. 자세한 순서는 <code>docs/google-setup.md</code>.
-            </p>
-            <div className="grid2" style={{ gap: "0 12px" }}>
-              <Field label="클라이언트 ID"><input value={cid} onChange={(e) => setCid(e.target.value)} placeholder="xxxx.apps.googleusercontent.com" /></Field>
-              <Field label="클라이언트 보안 비밀" hint={dev.google.has_secret ? "저장됨 (바꾸려면 새로 입력)" : undefined}><input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} /></Field>
-            </div>
-            <button className="btn sm" onClick={() => act("client", () => api.googleSetClient(cid, secret || ""), "저장했습니다")} disabled={!cid && !secret}>클라이언트 정보 저장</button>
-          </>
+        <div className="section-title">구글 연동 {st.email && (st.logged_in ? <span className="badge ok">{st.email}</span> : <span className="badge warn">{st.email} · 다시 로그인 필요</span>)}</div>
+        {!android && !dev.google.env_client && (
+          <p className="notice" style={{ marginTop: 0 }}>이 빌드에는 구글 클라이언트 정보가 들어 있지 않아 로그인할 수 없습니다. 프로젝트 루트 <code>.env</code>를 채운 뒤 다시 빌드하세요.</p>
         )}
-        {android && <p className="muted small" style={{ marginTop: 0 }}>PC와 같은 Google Cloud 프로젝트의 Android OAuth 클라이언트를 사용합니다. 같은 구글 계정으로 로그인해야 PC와 같은 백업을 봅니다.</p>}
+        <p className="muted small" style={{ marginTop: 0 }}>구글 계정으로 로그인하면 드라이브 백업·동기화와 구글 캘린더 연동을 쓸 수 있습니다. {android ? "PC와" : "폰과"} 같은 계정으로 로그인해야 같은 백업을 봅니다.</p>
         <div className="row" style={{ marginTop: 10 }}>
           {st.logged_in ? (
             <button className="btn" onClick={async () => (await confirmDialog("구글 로그아웃할까요? 자동 백업·로드도 꺼집니다.")) && act("logout", () => api.googleLogout(), "로그아웃했습니다")}>로그아웃</button>
           ) : (
-            <button className="btn primary" disabled={!!busy || (!android && !dev.google.client_id && !dev.google.env_client)} onClick={() => act("login", () => api.googleLogin(), "구글 로그인 완료")}>{busy === "login" ? "브라우저에서 로그인하세요…" : "구글 로그인"}</button>
+            <button className="btn primary" disabled={!!busy || (!android && !dev.google.env_client)} onClick={() => act("login", () => api.googleLogin(), "구글 로그인 완료")}>{busy === "login" ? "브라우저에서 로그인하세요…" : "구글 로그인"}</button>
           )}
         </div>
       </div>

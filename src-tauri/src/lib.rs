@@ -190,22 +190,14 @@ async fn sync_drive_load(app: AppHandle) -> Result<()> {
 }
 
 #[tauri::command]
-async fn sync_set_auto(state: State<'_, AppState>, auto_backup: bool, auto_load: bool) -> Result<()> {
+async fn sync_set_auto(app: AppHandle, auto_backup: bool, auto_load: bool) -> Result<()> {
+    if (auto_backup || auto_load) && !sync::logged_in(&app) {
+        return Err(Error::msg("구글 로그인 후 켤 수 있습니다"));
+    }
+    let state = app.state::<AppState>();
     state.device.update(|d| {
         d.auto_backup = auto_backup;
         d.auto_load = auto_load;
-    })?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn google_set_client(state: State<'_, AppState>, client_id: String, client_secret: String) -> Result<()> {
-    state.device.update(|d| {
-        d.google.client_id = client_id.trim().to_string();
-        // Blank means "keep the stored secret" (the UI never echoes it back).
-        if !client_secret.trim().is_empty() {
-            d.google.client_secret = client_secret.trim().to_string();
-        }
     })?;
     Ok(())
 }
@@ -248,11 +240,8 @@ async fn device_settings(app: AppHandle) -> Result<Value> {
     Ok(json!({
         "llm": cfg.llm, "stt": { "model": cfg.stt.model_file(), "language": cfg.stt.language, "threads": cfg.stt.threads },
         "google": {
-            "client_id": cfg.google.client_id,
-            "has_secret": !cfg.google.client_secret.is_empty(),
             "email": cfg.google.email,
-            "env_client": option_env!("SM_GOOGLE_CLIENT_ID").is_some(),
-            "env_secret": option_env!("SM_GOOGLE_CLIENT_SECRET").is_some(),
+            "env_client": option_env!("SM_GOOGLE_CLIENT_ID").is_some_and(|v| !v.trim().is_empty()),
         },
         "models_size": models::total_size(&app),
         "gcal_last_sync": cfg.gcal_last_sync,
@@ -538,7 +527,9 @@ fn spawn_auto_load(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = sync::auto_load(&app).await {
-            let _ = app.emit("sync-error", format!("자동 로드 실패: {e}"));
+            if !google::is_stale_session_error(&app, &e) {
+                let _ = app.emit("sync-error", format!("자동 로드 실패: {e}"));
+            }
         }
         if let Err(e) = notif_sync_inner(&app) {
             eprintln!("notif sync: {e}");
@@ -653,7 +644,6 @@ pub fn run() {
             sync_drive_backup,
             sync_drive_load,
             sync_set_auto,
-            google_set_client,
             google_login,
             google_logout,
             gcal_sync,

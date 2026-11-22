@@ -34,6 +34,9 @@ pub struct SyncStatus {
     pub auto_load: bool,
     pub logged_in: bool,
     pub email: Option<String>,
+    /// The login this status belongs to: a screen keeps Drive info from an
+    /// earlier status only while this is the same.
+    pub session: u64,
     /// Live DB changed since it last matched Drive.
     pub unsynced: bool,
 }
@@ -45,17 +48,25 @@ pub fn logged_in(app: &AppHandle) -> bool {
 
 pub async fn status(app: &AppHandle, with_drive: bool) -> Result<SyncStatus> {
     let state = app.state::<AppState>();
-    let cfg = state.device.get();
     let auto = state.db.last_modified()?;
-    let li = logged_in(app);
-    let (drive, drive_error) = if with_drive && li {
+    let started = state.device.get().google.session;
+    let (mut drive, mut drive_error) = if with_drive && logged_in(app) {
         match google::find_backup(app).await {
             Ok(f) => (f, None),
+            Err(e) if google::is_stale_session_error(app, &e) => (None, None),
             Err(e) => (None, Some(e.to_string())),
         }
     } else {
         (None, None)
     };
+    // Read after the Drive query: it may have found the login expired and ended it.
+    let cfg = state.device.get();
+    let li = logged_in(app);
+    // A login or logout during the query: what it found was another session's.
+    if cfg.google.session != started {
+        drive = None;
+        drive_error = None;
+    }
     Ok(SyncStatus {
         auto_saved_at: auto,
         manual_saved_at: cfg.manual_saved_at.filter(|_| state.manual_path.exists()),
@@ -69,6 +80,7 @@ pub async fn status(app: &AppHandle, with_drive: bool) -> Result<SyncStatus> {
         auto_load: cfg.auto_load,
         logged_in: li,
         email: cfg.google.email,
+        session: cfg.google.session,
         unsynced: cfg.synced_local_modified != Some(auto),
     })
 }

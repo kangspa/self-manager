@@ -24,16 +24,22 @@ struct TokenResp {
     refresh_token: Option<String>,
 }
 
-/// Device setting first, then the client baked in from .env at build time.
-pub fn client(g: &crate::device::GoogleConfig) -> crate::device::GoogleConfig {
+/// `g` with the OAuth client baked in from .env at build time (users never enter one).
+fn built_in(g: &crate::device::GoogleConfig) -> crate::device::GoogleConfig {
     let mut g = g.clone();
-    if g.client_id.trim().is_empty() {
-        g.client_id = option_env!("SM_GOOGLE_CLIENT_ID").unwrap_or("").to_string();
-    }
-    if g.client_secret.trim().is_empty() {
-        g.client_secret = option_env!("SM_GOOGLE_CLIENT_SECRET").unwrap_or("").to_string();
-    }
+    g.client_id = option_env!("SM_GOOGLE_CLIENT_ID").unwrap_or("").to_string();
+    g.client_secret = option_env!("SM_GOOGLE_CLIENT_SECRET").unwrap_or("").to_string();
     g
+}
+
+/// The client for the current session. A refresh token only works with the
+/// client that issued it: a session started by an older version with a client
+/// typed into its settings keeps that client until logout or the next login.
+pub fn client(g: &crate::device::GoogleConfig) -> crate::device::GoogleConfig {
+    if !g.client_id.trim().is_empty() && g.refresh_token.is_some() {
+        return g.clone();
+    }
+    built_in(g)
 }
 
 fn b64url(bytes: &[u8]) -> String {
@@ -66,9 +72,10 @@ async fn check(resp: reqwest::Response) -> Result<reqwest::Response> {
 pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let state = app.state::<AppState>();
-    let cfg = client(&state.device.get().google);
+    // A new login always uses the built-in client.
+    let cfg = built_in(&state.device.get().google);
     if cfg.client_id.trim().is_empty() {
-        return Err(Error::msg("구글 OAuth 클라이언트 ID가 없습니다 (.env의 GOOGLE_CLIENT_ID 또는 설정 화면)"));
+        return Err(Error::msg("이 빌드에는 구글 OAuth 클라이언트 ID가 없습니다 (.env의 GOOGLE_CLIENT_ID)"));
     }
     let verifier: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(64).map(char::from).collect();
     let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
@@ -152,16 +159,155 @@ pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     .json()
     .await?;
     let email = fetch_email(&state.http, &tok.access_token).await.ok();
-    state.device.update(|d| {
+    start_session(app, email.as_deref(), |d| {
         d.google.access_token = Some(tok.access_token.clone());
         d.google.expires_at = now_s() + tok.expires_in.unwrap_or(3600) - 60;
-        if tok.refresh_token.is_some() {
-            d.google.refresh_token = tok.refresh_token.clone();
-        }
+        // This session belongs to the built-in client now.
+        d.google.client_id.clear();
+        d.google.client_secret.clear();
+        d.google.refresh_token = tok.refresh_token.clone();
         d.google.email = email.clone();
         d.google.authorized = true;
-    })?;
+    })
+    .await?;
     Ok(email.unwrap_or_default())
+}
+
+/// Whether a login as `email` continues the account the stored Drive state
+/// belongs to. Only a known, identical address counts: if either side is
+/// unknown (never fetched, logged out, lookup failed) it may be another account.
+fn same_account(d: &crate::device::DeviceConfig, email: Option<&str>) -> bool {
+    matches!((d.google.email.as_deref(), email), (Some(a), Some(b)) if a == b)
+}
+
+/// Drops the Drive state of the previous account (in device.json): its file
+/// ids and the sync point. Without the sync point the next sync merges both
+/// sides instead of taking the other account's backup as "only Drive changed".
+fn forget_drive_state(d: &mut crate::device::DeviceConfig) {
+    d.drive_epoch += 1;
+    d.drive_file_id = None;
+    d.drive_folder_id = None;
+    d.drive_files_folder_id = None;
+    d.synced_local_modified = None;
+}
+
+/// Removes a file of the old account's Drive state; "already gone" is fine.
+fn remove_if_present(p: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Starts the session of a fresh login as `email`. On an account switch the old
+/// account's Drive state goes first: with the DB-sync lock held (no sync is
+/// mid-way, none starts) the merge base is removed - a login that cannot remove
+/// it fails rather than merge against the other account's data - and then, in
+/// one config update with the new session, the ids, sync point and file list.
+async fn start_session(app: &AppHandle, email: Option<&str>, set: impl FnOnce(&mut crate::device::DeviceConfig)) -> Result<()> {
+    let state = app.state::<AppState>();
+    let _no_sync = state.sync_lock.lock().await;
+    let switched = !same_account(&state.device.get(), email);
+    if switched {
+        remove_if_present(&state.data_dir.join("base.db")).map_err(|e| Error::msg(format!("이전 계정의 동기화 기준 파일(base.db)을 지우지 못해 로그인을 중단했습니다: {e}")))?;
+    }
+    let cache = crate::attachments::remote_cache_path(app);
+    state.device.update(|d| {
+        if switched {
+            forget_drive_state(d);
+            // Display-only cache; the next file sync rebuilds it.
+            let _ = std::fs::remove_file(&cache);
+        }
+        set(d);
+        d.google.session += 1;
+    })?;
+    Ok(())
+}
+
+/// A session error from work of an old session while a newer login is already
+/// in place: the user just signed in, so it is not worth showing.
+pub fn is_stale_session_error(app: &AppHandle, e: &Error) -> bool {
+    matches!(e, Error::Session(_)) && crate::sync::logged_in(app)
+}
+
+/// Tells the screens a session ended on its own (expired, revoked, another
+/// account's token), so a settings screen that is open shows 구글 로그인 now.
+fn session_ended(app: &AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("google-session-ended", ());
+}
+
+/// Drive access for one operation: a token and the Drive-state epoch it
+/// belongs to (see `DeviceConfig::drive_epoch`).
+async fn drive_session(app: &AppHandle) -> Result<(String, u64)> {
+    let epoch = app.state::<AppState>().device.get().drive_epoch;
+    let token = access_token(app).await?;
+    // A login in between may have handed out the new account's token.
+    drive_state(app, epoch)?;
+    Ok((token, epoch))
+}
+
+/// A token for work that belongs to `epoch`'s account (a whole file-sync
+/// pass): fails once the account has changed, so nothing listed with one
+/// account is ever acted on with another's token.
+async fn session_at(app: &AppHandle, epoch: u64) -> Result<String> {
+    let (token, now) = drive_session(app).await?;
+    if now != epoch {
+        return Err(Error::session(ACCOUNT_SWITCHED));
+    }
+    Ok(token)
+}
+
+pub const ACCOUNT_SWITCHED: &str = "구글 계정이 바뀌어 이전 계정의 작업을 중단했습니다";
+
+/// The device state, as long as it still belongs to `epoch`'s account.
+pub fn drive_state(app: &AppHandle, epoch: u64) -> Result<crate::device::DeviceConfig> {
+    let cfg = app.state::<AppState>().device.get();
+    if cfg.drive_epoch != epoch {
+        return Err(Error::session(ACCOUNT_SWITCHED));
+    }
+    Ok(cfg)
+}
+
+/// Records Drive state found by work of `epoch`'s account, unless the account
+/// changed meanwhile.
+pub fn record_drive(app: &AppHandle, epoch: u64, f: impl FnOnce(&mut crate::device::DeviceConfig)) -> Result<()> {
+    app.state::<AppState>().device.update(|d| {
+        if d.drive_epoch == epoch {
+            f(d);
+        }
+    })?;
+    Ok(())
+}
+
+/// Google no longer accepts the stored refresh token (expired - 7 days while
+/// the OAuth app is in "Testing" - or revoked): end the session so the app
+/// shows "logged out" and asks for a new login instead of failing every sync.
+/// Android handed out a token for an account other than the signed-in one.
+#[cfg_attr(desktop, allow(dead_code))]
+pub const WRONG_ACCOUNT: &str = "폰에서 다른 구글 계정의 권한이 와서 사용하지 않았습니다. 설정 › 백업·동기화에서 다시 로그인해 주세요.";
+
+/// Whether the stored session is still the one a refresh started from (`g`,
+/// using `refresh`): same login, still signed in, same refresh token.
+#[cfg_attr(mobile, allow(dead_code))]
+fn same_session(d: &crate::device::DeviceConfig, g: &crate::device::GoogleConfig, refresh: &str) -> bool {
+    d.google.session == g.session && d.google.authorized && d.google.refresh_token.as_deref() == Some(refresh)
+}
+
+/// A token arrived for a session that ended or was replaced meanwhile.
+pub const SESSION_CHANGED: &str = "구글 로그인 상태가 바뀌어 이 작업을 중단했습니다. 다시 시도해 주세요.";
+
+pub const LOGIN_EXPIRED: &str = "구글 로그인이 만료됐습니다. 설정 › 백업·동기화에서 다시 로그인해 주세요.";
+
+/// Google Play services reports a missing connection as status 7 (NETWORK_ERROR).
+#[cfg_attr(desktop, allow(dead_code))]
+fn is_network_failure(msg: &str) -> bool {
+    msg.contains("NETWORK_ERROR") || msg.trim_start().starts_with("7:") || msg.contains(": 7:")
+}
+
+#[cfg_attr(mobile, allow(dead_code))]
+fn is_dead_grant(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_grant")
 }
 
 async fn fetch_email(http: &reqwest::Client, token: &str) -> Result<String> {
@@ -184,31 +330,119 @@ pub async fn access_token(app: &AppHandle) -> Result<String> {
         if !g.authorized {
             return Err(Error::msg("구글 로그인이 필요합니다"));
         }
-        let r = crate::mobile::google_authorize(app, false)?;
+        // The token must be the signed-in account's: ask for that account, then
+        // check whose token came back (the phone may have another account
+        // selected). Without a known address there is nothing to check
+        // against, so a fresh login is needed.
+        // Anything but a passing network problem ends the session (keeping the
+        // address and Drive state), so the screen offers 구글 로그인 right away
+        // instead of a session that only fails. Re-login on Android is a tap.
+        let end = |why: String| -> Result<String> {
+            let mut ended = false;
+            state.device.update(|d| {
+                // Unless a new login happened meanwhile.
+                if d.google.session == g.session {
+                    ended = true;
+                    d.google.access_token = None;
+                    d.google.expires_at = 0;
+                    d.google.authorized = false;
+                    // Other refreshes of this session still running must not
+                    // put a token back.
+                    d.google.session += 1;
+                }
+            })?;
+            // A newer login is fine: say nothing about signing in again.
+            if !ended {
+                return Err(Error::session(SESSION_CHANGED));
+            }
+            session_ended(app);
+            Err(Error::session(why))
+        };
+        let Some(account) = g.email.clone().filter(|e| !e.is_empty()) else {
+            return end(LOGIN_EXPIRED.into());
+        };
+        let r = match crate::mobile::google_authorize(app, false, Some(&account)) {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains(crate::mobile::NEEDS_CONSENT) => return end(LOGIN_EXPIRED.into()),
+            Err(e) if is_network_failure(&e.to_string()) => return Err(e),
+            // E.g. the signed-in account was removed from the phone.
+            Err(e) => return end(format!("구글 권한을 다시 받아야 합니다 ({e}). 설정 › 백업·동기화에서 다시 로그인해 주세요.")),
+        };
+        let issued_to = match fetch_email(&state.http, &r.access_token).await {
+            Ok(v) => v,
+            // Google rejected the token it just gave: no use retrying it.
+            Err(e) if e.to_string().starts_with("Google API 4") => return end(format!("구글 권한을 확인하지 못했습니다 ({e}). 다시 로그인해 주세요.")),
+            Err(e) => return Err(e),
+        };
+        if !issued_to.eq_ignore_ascii_case(&account) {
+            return end(WRONG_ACCOUNT.into());
+        }
+        let mut kept = false;
         state.device.update(|d| {
-            d.google.access_token = Some(r.access_token.clone());
-            d.google.expires_at = now_s() + 50 * 60;
+            // Only into the same session, and only while it is still signed in:
+            // never revive one that ended or was logged out meanwhile.
+            if d.google.session == g.session && d.google.authorized {
+                d.google.access_token = Some(r.access_token.clone());
+                d.google.expires_at = now_s() + 50 * 60;
+                kept = true;
+            }
         })?;
+        if !kept {
+            return Err(Error::session(SESSION_CHANGED));
+        }
         return Ok(r.access_token);
     }
     #[cfg(desktop)]
     {
-        let refresh = g.refresh_token.ok_or_else(|| Error::msg("구글 로그인이 필요합니다"))?;
-        let tok: TokenResp = check(
-            state
-                .http
-                .post(TOKEN_URL)
-                .form(&with_secret(vec![("client_id", g.client_id.trim()), ("refresh_token", refresh.as_str()), ("grant_type", "refresh_token")], &g.client_secret))
-                .send()
-                .await?,
-        )
-        .await?
-        .json()
-        .await?;
+        let refresh = g.refresh_token.clone().ok_or_else(|| Error::msg("구글 로그인이 필요합니다"))?;
+        let resp = state
+            .http
+            .post(TOKEN_URL)
+            .form(&with_secret(vec![("client_id", g.client_id.trim()), ("refresh_token", refresh.as_str()), ("grant_type", "refresh_token")], &g.client_secret))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if is_dead_grant(status, &body) {
+                let mut ended = false;
+                state.device.update(|d| {
+                    // Unless a logout or a new login happened meanwhile.
+                    if same_session(d, &g, &refresh) {
+                        ended = true;
+                        d.google.access_token = None;
+                        d.google.refresh_token = None;
+                        d.google.expires_at = 0;
+                        d.google.authorized = false;
+                        d.google.client_id.clear();
+                        d.google.client_secret.clear();
+                        d.google.session += 1;
+                    }
+                })?;
+                // The old token died, but a newer login (or a logout) replaced it:
+                // nothing to tell the user about signing in again.
+                if !ended {
+                    return Err(Error::session(SESSION_CHANGED));
+                }
+                session_ended(app);
+                return Err(Error::session(LOGIN_EXPIRED));
+            }
+            return Err(Error::msg(format!("Google API {status}: {}", body.chars().take(400).collect::<String>())));
+        }
+        let tok: TokenResp = resp.json().await?;
+        let mut kept = false;
         state.device.update(|d| {
-            d.google.access_token = Some(tok.access_token.clone());
-            d.google.expires_at = now_s() + tok.expires_in.unwrap_or(3600) - 60;
+            // Only into the same, still signed-in session: the token is not
+            // handed out otherwise.
+            if same_session(d, &g, &refresh) {
+                d.google.access_token = Some(tok.access_token.clone());
+                d.google.expires_at = now_s() + tok.expires_in.unwrap_or(3600) - 60;
+                kept = true;
+            }
         })?;
+        if !kept {
+            return Err(Error::session(SESSION_CHANGED));
+        }
         Ok(tok.access_token)
     }
 }
@@ -216,17 +450,19 @@ pub async fn access_token(app: &AppHandle) -> Result<String> {
 #[cfg(mobile)]
 pub async fn login_mobile(app: &AppHandle) -> Result<String> {
     let state = app.state::<AppState>();
-    let r = crate::mobile::google_authorize(app, true)?;
+    // The user picks the account; start_session handles a switch.
+    let r = crate::mobile::google_authorize(app, true, None)?;
     let email = match r.email.clone().filter(|e| !e.is_empty()) {
         Some(e) => Some(e),
         None => fetch_email(&state.http, &r.access_token).await.ok(),
     };
-    state.device.update(|d| {
+    start_session(app, email.as_deref(), |d| {
         d.google.access_token = Some(r.access_token.clone());
         d.google.expires_at = now_s() + 50 * 60;
         d.google.email = email.clone();
         d.google.authorized = true;
-    })?;
+    })
+    .await?;
     Ok(email.unwrap_or_default())
 }
 
@@ -237,8 +473,12 @@ pub async fn logout(app: &AppHandle) -> Result<()> {
         let _ = state.http.post("https://oauth2.googleapis.com/revoke").form(&[("token", t)]).send().await;
     }
     state.device.update(|d| {
+        // Work still running for the old session must not bring it back.
+        d.google.session += 1;
         d.google.access_token = None;
         d.google.refresh_token = None;
+        d.google.client_id.clear();
+        d.google.client_secret.clear();
         d.google.email = None;
         d.google.authorized = false;
         d.google.expires_at = 0;
@@ -278,7 +518,7 @@ fn parse_drive_file(v: &Value) -> DriveFile {
 /// as long as both belong to the same Google Cloud project).
 pub async fn find_backup(app: &AppHandle) -> Result<Option<DriveFile>> {
     let state = app.state::<AppState>();
-    let token = access_token(app).await?;
+    let (token, epoch) = drive_session(app).await?;
     let q = format!("name='{BACKUP_NAME}' and trashed=false");
     let v: Value = check(
         state
@@ -294,14 +534,14 @@ pub async fn find_backup(app: &AppHandle) -> Result<Option<DriveFile>> {
     .await?;
     let file = v["files"].as_array().and_then(|a| a.first()).map(parse_drive_file);
     if let Some(f) = &file {
-        state.device.update(|d| d.drive_file_id = Some(f.id.clone()))?;
+        record_drive(app, epoch, |d| d.drive_file_id = Some(f.id.clone()))?;
     }
     Ok(file)
 }
 
-async fn ensure_folder(app: &AppHandle, token: &str) -> Result<String> {
+async fn ensure_folder(app: &AppHandle, token: &str, epoch: u64) -> Result<String> {
     let state = app.state::<AppState>();
-    if let Some(id) = state.device.get().drive_folder_id {
+    if let Some(id) = drive_state(app, epoch)?.drive_folder_id {
         return Ok(id);
     }
     let q = format!("name='{FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false");
@@ -324,36 +564,35 @@ async fn ensure_folder(app: &AppHandle, token: &str) -> Result<String> {
             created["id"].as_str().unwrap_or("").to_string()
         }
     };
-    state.device.update(|d| d.drive_folder_id = Some(id.clone()))?;
+    record_drive(app, epoch, |d| d.drive_folder_id = Some(id.clone()))?;
     Ok(id)
 }
 
 /// Uploads the DB snapshot at `path` (streamed, resumable: no 5MB multipart limit).
 pub async fn upload_backup(app: &AppHandle, path: &std::path::Path, local_modified: i64) -> Result<DriveFile> {
-    let state = app.state::<AppState>();
-    let token = access_token(app).await?;
+    let (token, epoch) = drive_session(app).await?;
     let size = tokio::fs::metadata(path).await?.len();
-    let existing = match state.device.get().drive_file_id {
+    let existing = match drive_state(app, epoch)?.drive_file_id {
         Some(id) => Some(id),
         None => find_backup(app).await?.map(|f| f.id),
     };
     let device = if cfg!(target_os = "android") { "android" } else { "desktop" };
     let mut meta = json!({ "appProperties": { "localModified": local_modified.to_string(), "device": device } });
     if existing.is_none() {
-        let folder = ensure_folder(app, &token).await?;
+        let folder = ensure_folder(app, &token, epoch).await?;
         meta["name"] = json!(BACKUP_NAME);
         meta["parents"] = json!([folder]);
     }
     let v = match resumable_upload(app, &token, path, size, meta, existing.as_deref()).await {
         Err(Error::Msg(m)) if m == "drive-file-missing" => {
             // The file was deleted from Drive; forget the id and create a new one.
-            state.device.update(|d| d.drive_file_id = None)?;
+            record_drive(app, epoch, |d| d.drive_file_id = None)?;
             return Box::pin(upload_backup(app, path, local_modified)).await;
         }
         r => r?,
     };
     let f = parse_drive_file(&v);
-    state.device.update(|d| d.drive_file_id = Some(f.id.clone()))?;
+    record_drive(app, epoch, |d| d.drive_file_id = Some(f.id.clone()))?;
     Ok(f)
 }
 
@@ -420,12 +659,12 @@ pub async fn calendar_delete(app: &AppHandle, gcal_id: &str) -> Result<()> {
 
 // ---------------- Attachment files (SelfManager/files/<sha256>) ----------------
 
-async fn ensure_files_folder(app: &AppHandle, token: &str) -> Result<String> {
+async fn ensure_files_folder(app: &AppHandle, token: &str, epoch: u64) -> Result<String> {
     let state = app.state::<AppState>();
-    if let Some(id) = state.device.get().drive_files_folder_id {
+    if let Some(id) = drive_state(app, epoch)?.drive_files_folder_id {
         return Ok(id);
     }
-    let parent = ensure_folder(app, token).await?;
+    let parent = ensure_folder(app, token, epoch).await?;
     let q = format!("name='files' and '{parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
     let v: Value = check(state.http.get("https://www.googleapis.com/drive/v3/files").bearer_auth(token).query(&[("q", q.as_str()), ("fields", "files(id)")]).send().await?).await?.json().await?;
     let id = match v["files"].as_array().and_then(|a| a.first()).and_then(|f| f["id"].as_str()) {
@@ -446,15 +685,15 @@ async fn ensure_files_folder(app: &AppHandle, token: &str) -> Result<String> {
             created["id"].as_str().unwrap_or("").to_string()
         }
     };
-    state.device.update(|d| d.drive_files_folder_id = Some(id.clone()))?;
+    record_drive(app, epoch, |d| d.drive_files_folder_id = Some(id.clone()))?;
     Ok(id)
 }
 
 /// sha256 -> Drive file id of every stored attachment.
-pub async fn list_files(app: &AppHandle) -> Result<std::collections::HashMap<String, String>> {
+pub async fn list_files(app: &AppHandle, epoch: u64) -> Result<std::collections::HashMap<String, String>> {
     let state = app.state::<AppState>();
-    let token = access_token(app).await?;
-    let folder = ensure_files_folder(app, &token).await?;
+    let token = session_at(app, epoch).await?;
+    let folder = ensure_files_folder(app, &token, epoch).await?;
     let q = format!("'{folder}' in parents and trashed=false");
     let mut out = std::collections::HashMap::new();
     let mut page: Option<String> = None;
@@ -518,19 +757,19 @@ pub async fn resumable_upload(app: &AppHandle, token: &str, path: &std::path::Pa
     Ok(check(resp).await?.json().await?)
 }
 
-pub async fn upload_file(app: &AppHandle, sha: &str, path: &std::path::Path, size: u64) -> Result<()> {
-    let token = access_token(app).await?;
-    let folder = ensure_files_folder(app, &token).await?;
+pub async fn upload_file(app: &AppHandle, epoch: u64, sha: &str, path: &std::path::Path, size: u64) -> Result<()> {
+    let token = session_at(app, epoch).await?;
+    let folder = ensure_files_folder(app, &token, epoch).await?;
     resumable_upload(app, &token, path, size, json!({ "name": sha, "parents": [folder] }), None).await?;
     Ok(())
 }
 
 /// Downloads to `<dest>.part`, checks the hash, then moves into place.
-pub async fn download_file(app: &AppHandle, id: &str, dest: &std::path::Path, sha: &str) -> Result<()> {
+pub async fn download_file(app: &AppHandle, epoch: u64, id: &str, dest: &std::path::Path, sha: &str) -> Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
     let state = app.state::<AppState>();
-    let token = access_token(app).await?;
+    let token = session_at(app, epoch).await?;
     let resp = check(state.http.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).timeout(std::time::Duration::from_secs(6 * 3600)).bearer_auth(&token).send().await?).await?;
     tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
     let part = dest.with_extension("part");
@@ -552,13 +791,94 @@ pub async fn download_file(app: &AppHandle, id: &str, dest: &std::path::Path, sh
     Ok(())
 }
 
-pub async fn delete_file(app: &AppHandle, id: &str) -> Result<()> {
+pub async fn delete_file(app: &AppHandle, epoch: u64, id: &str) -> Result<()> {
     let state = app.state::<AppState>();
-    let token = access_token(app).await?;
+    let token = session_at(app, epoch).await?;
     let resp = state.http.delete(format!("https://www.googleapis.com/drive/v3/files/{id}")).bearer_auth(&token).send().await?;
     if resp.status().is_success() || resp.status().as_u16() == 404 {
         Ok(())
     } else {
         check(resp).await.map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::GoogleConfig;
+
+    #[test]
+    fn a_session_keeps_the_client_that_issued_its_token() {
+        let legacy = GoogleConfig { client_id: "old-client".into(), client_secret: "old-secret".into(), refresh_token: Some("r".into()), ..Default::default() };
+        let c = client(&legacy);
+        assert_eq!((c.client_id.as_str(), c.client_secret.as_str()), ("old-client", "old-secret"), "refresh needs the issuing client");
+
+        // No session: a stored client from an older version is not used.
+        let stale = GoogleConfig { refresh_token: None, ..legacy.clone() };
+        assert_eq!(client(&stale).client_id, option_env!("SM_GOOGLE_CLIENT_ID").unwrap_or(""));
+        // A session from the built-in client (nothing stored) uses the built-in one.
+        let fresh = GoogleConfig { refresh_token: Some("r".into()), ..Default::default() };
+        assert_eq!(client(&fresh).client_id, option_env!("SM_GOOGLE_CLIENT_ID").unwrap_or(""));
+        // A new login always starts from the built-in client.
+        assert_eq!(built_in(&legacy).client_id, option_env!("SM_GOOGLE_CLIENT_ID").unwrap_or(""));
+    }
+
+    #[test]
+    fn a_refresh_only_touches_the_session_it_started_from() {
+        let mut d = crate::device::DeviceConfig::default();
+        d.google.session = 3;
+        d.google.authorized = true;
+        d.google.refresh_token = Some("r".into());
+        let started = d.google.clone();
+        assert!(same_session(&d, &started, "r"));
+        // A new login, even one that got the same refresh token back.
+        d.google.session = 4;
+        assert!(!same_session(&d, &started, "r"));
+        // Logged out (or ended) meanwhile.
+        d.google.session = 3;
+        d.google.authorized = false;
+        assert!(!same_session(&d, &started, "r"));
+        d.google.authorized = true;
+        d.google.refresh_token = Some("other".into());
+        assert!(!same_session(&d, &started, "r"));
+    }
+
+    #[test]
+    fn only_a_network_problem_keeps_an_android_session() {
+        assert!(is_network_failure("7: NETWORK_ERROR"));
+        assert!(is_network_failure("com.google.android.gms.common.api.ApiException: 7: "));
+        assert!(!is_network_failure("구글 재로그인이 필요합니다"));
+        assert!(!is_network_failure("4: SIGN_IN_REQUIRED"));
+    }
+
+    #[test]
+    fn only_a_rejected_refresh_token_ends_the_session() {
+        let body = r#"{ "error": "invalid_grant", "error_description": "Token has been expired or revoked." }"#;
+        assert!(is_dead_grant(reqwest::StatusCode::BAD_REQUEST, body));
+        // A network hiccup or server error must not log the user out.
+        assert!(!is_dead_grant(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body));
+        assert!(!is_dead_grant(reqwest::StatusCode::BAD_REQUEST, r#"{ "error": "invalid_request" }"#));
+    }
+
+    #[test]
+    fn drive_state_is_kept_only_for_the_same_known_account() {
+        let mut d = crate::device::DeviceConfig::default();
+        d.google.email = Some("a@example.com".into());
+        // Same account again (e.g. after the login expired): keep it.
+        assert!(same_account(&d, Some("a@example.com")));
+        // Another account, or one whose address is unknown on either side: drop it.
+        assert!(!same_account(&d, Some("b@example.com")));
+        assert!(!same_account(&d, None));
+        d.google.email = None;
+        assert!(!same_account(&d, Some("a@example.com")));
+
+        d.drive_file_id = Some("f".into());
+        d.drive_folder_id = Some("d".into());
+        d.drive_files_folder_id = Some("x".into());
+        d.synced_local_modified = Some(5);
+        forget_drive_state(&mut d);
+        assert!(d.drive_file_id.is_none() && d.drive_folder_id.is_none() && d.drive_files_folder_id.is_none());
+        assert!(d.synced_local_modified.is_none(), "the next sync must not trust the old account's sync point");
+        assert_eq!(d.drive_epoch, 1, "work started before the reset can no longer record anything");
     }
 }

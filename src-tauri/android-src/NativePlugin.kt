@@ -1,5 +1,6 @@
 package com.selfmanager.app
 
+import android.accounts.Account
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
@@ -25,6 +26,8 @@ import com.google.android.gms.common.api.Scope
 class AuthArgs {
     var interactive: Boolean = true
     var scopes: Array<String> = arrayOf()
+    /** The signed-in account's address: a silent request asks for exactly that account. */
+    var account: String? = null
 }
 
 @InvokeArg
@@ -45,7 +48,9 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
     fun googleAuthorize(invoke: Invoke) {
         val args = invoke.parseArgs(AuthArgs::class.java)
         val scopes = args.scopes.filter { it.startsWith("https://") }.map { Scope(it) }
-        val request = AuthorizationRequest.builder().setRequestedScopes(scopes).build()
+        val builder = AuthorizationRequest.builder().setRequestedScopes(scopes)
+        args.account?.takeIf { it.isNotBlank() }?.let { builder.setAccount(Account(it, "com.google")) }
+        val request = builder.build()
         Identity.getAuthorizationClient(activity).authorize(request)
             .addOnSuccessListener { result ->
                 if (result.hasResolution()) {

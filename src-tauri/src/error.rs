@@ -14,11 +14,19 @@ pub enum Error {
     Tauri(#[from] tauri::Error),
     #[error("{0}")]
     Msg(String),
+    /// The Google session is gone or changed (expired, another account, a newer
+    /// login). Raised for work of an old session it is stale once a new login
+    /// is in place, and is then not shown.
+    #[error("{0}")]
+    Session(String),
 }
 
 impl Error {
     pub fn msg(s: impl Into<String>) -> Self {
         Error::Msg(s.into())
+    }
+    pub fn session(s: impl Into<String>) -> Self {
+        Error::Session(s.into())
     }
 }
 

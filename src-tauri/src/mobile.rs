@@ -40,6 +40,8 @@ pub struct GoogleAuth {
 struct AuthArgs {
     interactive: bool,
     scopes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
 }
 
 #[allow(unused_variables)]
@@ -53,9 +55,15 @@ fn run<T: serde::de::DeserializeOwned, A: Serialize>(app: &AppHandle, cmd: &str,
     Err(Error::msg("Android에서만 사용할 수 있는 기능입니다"))
 }
 
-pub fn google_authorize(app: &AppHandle, interactive: bool) -> Result<GoogleAuth> {
+/// NativePlugin.kt rejects a silent authorization with exactly this text when
+/// Google wants the user to consent again (e.g. the grant expired).
+pub const NEEDS_CONSENT: &str = "구글 재로그인이 필요합니다";
+
+/// `account`: ask for that account only (silent refresh of the signed-in one);
+/// None lets the user pick (login).
+pub fn google_authorize(app: &AppHandle, interactive: bool, account: Option<&str>) -> Result<GoogleAuth> {
     let scopes = crate::google::SCOPES.split(' ').map(String::from).collect();
-    run(app, "googleAuthorize", AuthArgs { interactive, scopes })
+    run(app, "googleAuthorize", AuthArgs { interactive, scopes, account: account.map(String::from) })
 }
 
 #[derive(Deserialize, Serialize, Default)]

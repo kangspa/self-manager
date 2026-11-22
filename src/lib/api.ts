@@ -60,6 +60,8 @@ export type SyncStatus = {
   auto_saved_at: number;
   manual_saved_at: number | null;
   manual_local_modified: number | null;
+  /** The login this status belongs to. */
+  session: number;
   drive: { id: string; modified_time: string | null; size: string | null; local_modified: number | null; device: string | null } | null;
   drive_error: string | null;
   synced_local_modified: number | null;
@@ -77,7 +79,7 @@ export type SttConfig = { model: string; language: string; threads: number };
 export type DeviceSettings = {
   llm: LlmConfig;
   stt: SttConfig;
-  google: { client_id: string; has_secret: boolean; email: string | null; env_client: boolean; env_secret: boolean };
+  google: { email: string | null; env_client: boolean };
   gcal_last_sync: number | null;
   platform: "android" | "desktop";
   ai_enabled: boolean;
@@ -135,7 +137,6 @@ export const api = {
   syncNow: (prefer?: "local" | "remote") => invoke<SyncOutcome>("sync_now", { prefer: prefer ?? null }),
   driveLoad: () => invoke("sync_drive_load"),
   setAuto: (autoBackup: boolean, autoLoad: boolean) => invoke("sync_set_auto", { autoBackup, autoLoad }),
-  googleSetClient: (clientId: string, clientSecret: string) => invoke("google_set_client", { clientId, clientSecret }),
   googleLogin: () => invoke<string>("google_login"),
   googleLogout: () => invoke("google_logout"),
   gcalSync: async () => {

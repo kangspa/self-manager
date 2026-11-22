@@ -326,10 +326,13 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
     use tauri::Emitter;
     let state = app.state::<AppState>();
     let _pass = state.file_sync.pass.lock().await;
+    // Everything this pass learns about Drive belongs to the account it started
+    // with; after a switch it neither prunes nor records anything.
+    let epoch = state.device.get().drive_epoch;
     let result = async {
         // A file syncs if *any* attachment using that content wants it.
         let wanted = wanted_files(app)?;
-        let remote = crate::google::list_files(app).await?;
+        let remote = crate::google::list_files(app, epoch).await?;
         let (mut up, mut down, mut removed) = (0, 0, 0);
         // One bad file (network drop, corrupt download) must not block the rest;
         // it is retried on the next pass.
@@ -337,10 +340,12 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
         let total = wanted.len();
         let mut now_remote: HashSet<String> = remote.keys().cloned().collect();
         for (done, (sha, (size, name))) in wanted.iter().enumerate() {
+            // Another account now: `remote` is the old one's list; stop the pass.
+            crate::google::drive_state(app, epoch)?;
             let local = local_path(app, sha);
             if local.exists() && !remote.contains_key(sha) {
                 let _ = app.emit("files-progress", json!({ "stage": "upload", "name": name, "done": done, "total": total }));
-                match crate::google::upload_file(app, sha, &local, *size).await {
+                match crate::google::upload_file(app, epoch, sha, &local, *size).await {
                     Ok(()) => {
                         up += 1;
                         now_remote.insert(sha.clone());
@@ -350,7 +355,7 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
             } else if !local.exists() && remote.contains_key(sha) {
                 let _ = app.emit("files-progress", json!({ "stage": "download", "name": name, "done": done, "total": total }));
                 state.file_sync.downloading.lock().unwrap().insert(sha.clone());
-                let r = crate::google::download_file(app, &remote[sha], &local, sha).await;
+                let r = crate::google::download_file(app, epoch, &remote[sha], &local, sha).await;
                 state.file_sync.downloading.lock().unwrap().remove(sha);
                 match r {
                     Ok(()) => down += 1,
@@ -365,6 +370,9 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
         // The list read at the start of this pass may be stale by now.
         {
             let _no_db_sync = state.sync_lock.lock().await;
+            // `remote` was listed with this account; a login (which resets the
+            // state under this same lock) may have switched it since.
+            crate::google::drive_state(app, epoch)?;
             let local_lm = state.db.last_modified()?;
             let synced = state.device.get().synced_local_modified;
             let drive_lm = crate::google::find_backup(app).await?.and_then(|f| f.local_modified);
@@ -376,7 +384,7 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
                         if wanted_now.contains_key(sha) {
                             continue;
                         }
-                        match crate::google::delete_file(app, id).await {
+                        match crate::google::delete_file(app, epoch, id).await {
                             Ok(()) => {
                                 now_remote.remove(sha);
                                 removed += 1;
@@ -387,7 +395,12 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
                 }
             }
         }
-        std::fs::write(remote_cache_path(app), serde_json::to_vec(&now_remote)?)?;
+        // Under the config lock, like the reset that removes it on a switch.
+        let bytes = serde_json::to_vec(&now_remote)?;
+        let cache = remote_cache_path(app);
+        let mut wrote = Ok(());
+        crate::google::record_drive(app, epoch, |_| wrote = std::fs::write(&cache, &bytes))?;
+        wrote?;
         Ok::<Value, Error>(json!({ "uploaded": up, "downloaded": down, "removed_from_drive": removed, "failed": failed }))
     }
     .await;
