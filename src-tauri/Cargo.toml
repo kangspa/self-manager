@@ -40,6 +40,11 @@ futures-util = "0.3"
 llama-cpp-2 = { version = "=0.1.161", default-features = false, features = ["android-shared-stdcxx"], optional = true }
 whisper-lite = { path = "crates/whisper-lite", optional = true }
 
+# One app per PC: a second launch (e.g. the portable exe next to the installed
+# one) would otherwise write the same database at the same time.
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [profile.release]
 opt-level = 3
 lto = true

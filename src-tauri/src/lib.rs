@@ -92,6 +92,12 @@ async fn db_bulk(state: State<'_, AppState>, ops: Vec<BulkOp>) -> Result<Vec<Val
     })
 }
 
+/// Move a work item (with its sub-items and AI notes) to another project, atomically.
+#[tauri::command]
+async fn work_move(state: State<'_, AppState>, id: i64, project_id: Option<i64>) -> Result<()> {
+    state.db.write(|tx| db::move_work_item(tx, id, project_id))
+}
+
 #[tauri::command]
 async fn expense_dashboard(state: State<'_, AppState>, from: String, to: String) -> Result<Value> {
     state.db.with(|c| queries::expense_dashboard(c, &from, &to))
@@ -542,7 +548,18 @@ fn spawn_auto_load(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Must be the first plugin: a second launch hands over to the running app
+    // (its window comes to the front) and exits before touching any data.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -620,6 +637,7 @@ pub fn run() {
             db_list,
             db_get,
             db_upsert,
+            work_move,
             db_delete,
             db_bulk,
             expense_dashboard,
