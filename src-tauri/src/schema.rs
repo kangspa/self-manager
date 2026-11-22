@@ -32,7 +32,7 @@ pub const TABLES: &[TableDef] = &[
     TableDef { name: "goal_notes", cols: &["goal_id", "period_type", "period_key", "body"], search: &["body"], has_created: true },
     TableDef { name: "diary_templates", cols: &["name", "fields_json", "is_default", "sort"], search: &["name"], has_created: true },
     TableDef { name: "diary_entries", cols: &["date", "template_id", "values_json", "mood"], search: &["values_json"], has_created: true },
-    TableDef { name: "daily_presets", cols: &["label", "kind", "color", "sort", "archived"], search: &["label"], has_created: true },
+    TableDef { name: "daily_presets", cols: &["label", "kind", "color", "emoji", "sort", "archived"], search: &["label"], has_created: true },
     TableDef { name: "daily_rules", cols: &["preset_id", "rule_type", "value"], search: &[], has_created: true },
     TableDef { name: "daily_logs", cols: &["date", "preset_id", "done", "note", "value"], search: &["note"], has_created: true },
     TableDef {
@@ -41,8 +41,16 @@ pub const TABLES: &[TableDef] = &[
         search: &["title", "description", "location"],
         has_created: true,
     },
-    TableDef { name: "projects", cols: &["name", "description", "status", "color", "archived", "sort"], search: &["name", "description"], has_created: true },
-    TableDef { name: "work_logs", cols: &["date", "project_id", "title", "body", "tags"], search: &["title", "body", "tags"], has_created: true },
+    TableDef { name: "projects", cols: &["name", "description", "status", "color", "archived", "sort", "start_date", "end_date"], search: &["name", "description"], has_created: true },
+    // One table for all work: a project holds phases (kind 'phase'), and any
+    // item may sit under a phase (parent_id). Items are dated by `date` (start)
+    // and optional `end_date`, so the same rows show by project or by period.
+    TableDef {
+        name: "work_logs",
+        cols: &["date", "end_date", "project_id", "parent_id", "kind", "status", "title", "body", "tags", "sort"],
+        search: &["title", "body", "tags"],
+        has_created: true,
+    },
     TableDef {
         name: "meetings",
         cols: &["work_log_id", "project_id", "title", "date", "audio_path", "duration_sec", "transcript_json", "summary_md", "status", "error"],
@@ -188,6 +196,20 @@ CREATE INDEX idx_att_sha ON attachments(sha256);
 CREATE TABLE app_settings (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, value TEXT, updated_at INTEGER);
 -- Fixed id so every device edits the same row and merges it column-wise.
 INSERT INTO app_settings(id, key, value, updated_at) VALUES (1, 'sync_max_mb', '10', 0);
+"#,
+    r#"
+-- Daily items: an emoji, shown on its background colour when both are set.
+ALTER TABLE daily_presets ADD COLUMN emoji TEXT;
+-- Work: project period, and items that nest under phases with a date range.
+ALTER TABLE projects ADD COLUMN start_date TEXT;
+ALTER TABLE projects ADD COLUMN end_date TEXT;
+ALTER TABLE work_logs ADD COLUMN end_date TEXT;
+ALTER TABLE work_logs ADD COLUMN parent_id INTEGER;
+-- 'log' (업무 기록), 'schedule' (업무 일정), 'phase' (세부 단계)
+ALTER TABLE work_logs ADD COLUMN kind TEXT NOT NULL DEFAULT 'log';
+ALTER TABLE work_logs ADD COLUMN status TEXT;
+ALTER TABLE work_logs ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_work_parent ON work_logs(parent_id);
 "#,
 ];
 

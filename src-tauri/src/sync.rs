@@ -158,6 +158,9 @@ enum SyncPoint {
 
 fn adopt(app: &AppHandle, file: &std::path::Path, why: &str, expected_lm: Option<i64>, base_src: &std::path::Path, synced: SyncPoint) -> Result<bool> {
     let state = app.state::<AppState>();
+    // The agreed state is the file as received. Opening it may still repair it
+    // (and bump the live stamp); that repair then counts as a local change.
+    let source_lm = validate_db_file(file)?;
     let swapped = match expected_lm {
         Some(lm) => state.db.replace_if_unchanged(file, lm)?,
         None => {
@@ -175,7 +178,7 @@ fn adopt(app: &AppHandle, file: &std::path::Path, why: &str, expected_lm: Option
     // Never let an unknown Drive stamp become the merged stamp: that would mark
     // un-uploaded local changes as synced, and a failed upload would then lose them.
     let synced = match synced {
-        SyncPoint::Swapped => Some(state.db.last_modified()?),
+        SyncPoint::Swapped => Some(source_lm),
         SyncPoint::Drive(stamp) => stamp,
     };
     let now = now_ms();
@@ -273,13 +276,11 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
         }
         return Ok(Some(Outcome::Nothing));
     };
-    // Drive already holds exactly our content.
-    if remote.local_modified == Some(local_lm) {
-        if synced != Some(local_lm) {
-            state.device.update(|d| d.synced_local_modified = Some(local_lm))?;
-        }
-        return Ok(Some(Outcome::Nothing));
-    }
+    // Equal stamps alone don't prove equal content (two devices can edit the
+    // same copy and land on the same stamp), so there is no shortcut here: only
+    // "nothing changed since the last sync on either side" skips work. Anything
+    // ambiguous goes through the merge below, which is harmless when both sides
+    // really are the same.
     let remote_changed = remote.local_modified.is_none() || remote.local_modified != synced;
 
     match (local_changed, remote_changed) {

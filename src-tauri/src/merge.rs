@@ -15,7 +15,7 @@ use std::path::Path;
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
-use crate::db::{open_conn, touch};
+use crate::db::{self, open_conn, touch};
 use crate::error::Result;
 use crate::schema::TABLES;
 
@@ -199,6 +199,11 @@ fn tombstones(conn: &Connection) -> Vec<String> {
 pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path, prefer: Option<Prefer>) -> Result<Report> {
     let lc = open_conn(local)?;
     let rc = open_conn(remote)?;
+    let remote_lm: i64 = rc
+        .query_row("SELECT value FROM meta WHERE key='last_modified'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| db::parse_stamp(&v))
+        .unwrap_or(0);
     let bc = match base {
         Some(p) => Some(open_conn(p)?),
         None => None,
@@ -244,9 +249,22 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
             [serde_json::to_string(&stones.into_iter().collect::<Vec<_>>())?],
         )?;
     }
+    // Column-wise merging can combine edits that are each valid but not
+    // together (one device turns a phase into a log, the other files an item
+    // under it): restore the work tree rules on the merged result.
+    db::normalize_work_all(&tx)?;
     touch(&tx)?;
+    // The merged stamp must also pass the remote one: the remote stamp becomes
+    // the sync point, and stamps only move forward from there.
+    let floor = db::next_stamp(remote_lm, 0)
+        .ok_or_else(|| crate::error::Error::msg("드라이브 백업의 저장 시각이 한계(9999년)에 도달해 합칠 수 없습니다. 정상적인 백업을 불러와 주세요."))?;
+    tx.execute(
+        "UPDATE meta SET value=CAST(?1 AS TEXT) WHERE key='last_modified' AND CAST(value AS INTEGER) < ?1",
+        [floor],
+    )?;
     tx.commit()?;
-    oc.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    // The result is used as a plain file (copied, uploaded): all of it must be in it.
+    db::checkpoint_fully(&oc)?;
     rep.applied = true;
     Ok(rep)
 }
@@ -303,6 +321,56 @@ mod tests {
         assert_eq!((row_a.1.as_str(), row_a.2.as_str()), ("A-phone", "a-pc"), "column-level merge");
         assert!(!m.iter().any(|x| x.0 == gone), "deletion on PC survives");
         let _ = b;
+    }
+
+    /// One device turns an empty phase into a log, the other files an item under
+    /// that phase. Each edit is valid alone; merged, the item must not end up
+    /// under a log.
+    #[test]
+    fn merge_keeps_the_work_tree_valid() {
+        let d = dir("tree");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let p = up(&base, "projects", json!({"name": "P"}));
+        let ph = up(&base, "work_logs", json!({"kind": "phase", "date": "2026-11-01", "project_id": p}));
+        for f in ["phone", "pc", "b"] {
+            base.snapshot_to(&d.join(format!("{f}.db"))).unwrap();
+        }
+        let phone = Db::open(d.join("phone.db")).unwrap();
+        let pc = Db::open(d.join("pc.db")).unwrap();
+        up(&phone, "work_logs", json!({"id": ph, "kind": "log"}));
+        let child = up(&pc, "work_logs", json!({"kind": "log", "date": "2026-11-02", "project_id": p, "parent_id": ph}));
+        phone.snapshot_to(&d.join("l.db")).unwrap();
+        pc.snapshot_to(&d.join("r.db")).unwrap();
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert!(rep.applied);
+        let c = Connection::open(d.join("out.db")).unwrap();
+        let (kind, parent): (String, Option<i64>) = c.query_row("SELECT (SELECT kind FROM work_logs WHERE id=?1), (SELECT parent_id FROM work_logs WHERE id=?2)", [ph, child], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(kind, "log");
+        assert_eq!(parent, None, "the item is not left under a log");
+    }
+
+    /// The remote copy's stamp is ahead of this device's clock: the merged
+    /// result must still carry a larger stamp than both inputs.
+    #[test]
+    fn merged_stamp_passes_both_sides() {
+        let d = dir("stamp");
+        let base = Db::open(d.join("base.db")).unwrap();
+        up(&base, "memos", json!({"title": "A"}));
+        for f in ["l", "r", "b"] {
+            base.snapshot_to(&d.join(format!("{f}.db"))).unwrap();
+        }
+        let l = Db::open(d.join("l.db")).unwrap();
+        up(&l, "memos", json!({"title": "local"}));
+        drop(l);
+        let r = Db::open(d.join("r.db")).unwrap();
+        up(&r, "memos", json!({"title": "remote"}));
+        drop(r);
+        let ahead = db::now_ms() + 3_600_000;
+        Connection::open(d.join("r.db")).unwrap().execute("UPDATE meta SET value=?1 WHERE key='last_modified'", [ahead.to_string()]).unwrap();
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert!(rep.applied);
+        let lm: i64 = Connection::open(d.join("out.db")).unwrap().query_row("SELECT value FROM meta WHERE key='last_modified'", [], |r| r.get::<_, String>(0)).unwrap().parse().unwrap();
+        assert!(lm > ahead, "merged {lm} must pass remote {ahead}");
     }
 
     #[test]
