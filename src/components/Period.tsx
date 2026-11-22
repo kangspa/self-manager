@@ -1,11 +1,13 @@
 import { ReactNode, useState } from "react";
-import { monthGrid, parseYmd, periodLabel, periodRange, shiftPeriod, today, ViewMode, VIEW_LABEL } from "../lib/date";
+import { monthGrid, parseYmd, periodLabel, periodRange, shiftPeriod, today, ViewMode, VIEW_LABEL, weekHead, WEEKDAYS } from "../lib/date";
+import { useWeekStart } from "../lib/weekStart";
 
 /**
  * Day / week / month view state for a page. The chosen mode is remembered per
  * page; the date being viewed survives navigating away and back in a session.
  */
 export function usePeriod(key: string, def: ViewMode = "day") {
+  useWeekStart();
   const read = (s: Storage, k: string) => {
     try {
       return s.getItem(k);
@@ -69,20 +71,20 @@ export function PeriodNav({ p, extra }: { p: Period; extra?: ReactNode }) {
   );
 }
 
-export const WEEK_HEAD = ["월", "화", "수", "목", "금", "토", "일"];
 
 const dayClass = (d: string) => {
   const w = parseYmd(d).getDay();
   return w === 0 ? "sun" : w === 6 ? "sat" : "";
 };
 
-/** Month calendar (Monday start, always 6 weeks so the height never jumps). */
+/** Month calendar (always 6 weeks so the height never jumps). */
 export function MonthGrid({ anchor, selected, onPick, onDouble, render }: { anchor: string; selected?: string; onPick: (d: string) => void; onDouble?: (d: string) => void; render: (d: string) => ReactNode }) {
+  useWeekStart();
   const month = parseYmd(anchor).getMonth();
   const t = today();
   return (
     <div className="cal">
-      {WEEK_HEAD.map((w, i) => <div key={w} className={`cal-h ${i === 6 ? "sun" : i === 5 ? "sat" : ""}`}>{w}</div>)}
+      {weekHead().map((w) => <div key={w} className={`cal-h ${w === "일" ? "sun" : w === "토" ? "sat" : ""}`}>{w}</div>)}
       {monthGrid(anchor).map((d) => (
         <div key={d} className={`cal-d ${parseYmd(d).getMonth() !== month ? "other" : ""} ${d === t ? "today" : ""} ${d === selected ? "sel" : ""}`} onClick={() => onPick(d)} onDoubleClick={onDouble && (() => onDouble(d))}>
           <span className={`cal-n ${dayClass(d)}`}>{parseYmd(d).getDate()}</span>
@@ -103,7 +105,7 @@ export function WeekColumns({ days, onPick, render, action }: { days: string[]; 
         return (
           <div key={d} className={`week-day ${d === t ? "today" : ""}`}>
             <div className="week-day-h">
-              <button className={`link-btn ${dayClass(d)}`} onClick={() => onPick(d)}>{dd.getMonth() + 1}/{dd.getDate()} {WEEK_HEAD[(dd.getDay() + 6) % 7]}</button>
+              <button className={`link-btn ${dayClass(d)}`} onClick={() => onPick(d)}>{dd.getMonth() + 1}/{dd.getDate()} {WEEKDAYS[dd.getDay()]}</button>
               {action?.(d)}
             </div>
             <div className="week-day-body">{render(d)}</div>

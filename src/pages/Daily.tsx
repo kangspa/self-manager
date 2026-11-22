@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, db, Row } from "../lib/api";
 import { useLoad, useRows } from "../lib/hooks";
-import { addDays, fmtDate, monthRange, parseYmd, today, weekRange, WEEKDAYS } from "../lib/date";
+import { addDays, fmtDate, monthRange, parseYmd, today, weekHead, weekRange, WEEKDAYS } from "../lib/date";
+import { useWeekStart } from "../lib/weekStart";
 import { AutoText, Chip, Empty, Modal, PageHeader } from "../components/ui";
 import { PresetIcon } from "../components/EmojiPicker";
 import { DailyIcon } from "../components/icons";
@@ -82,6 +83,7 @@ function DayModal({ date, day, presets, onClose }: { date: string; day: Day; pre
 }
 
 export default function Daily() {
+  useWeekStart();
   const [mode, setMode] = useState<"week" | "month">("week");
   const [anchor, setAnchor] = useState(today());
   const [open, setOpen] = useState<string | null>(null);
@@ -145,7 +147,7 @@ export default function Daily() {
         <div className="daily-week">{days.map((d) => cell(d, false))}</div>
       ) : (
         <div className="daily-week month" style={{ gridTemplateColumns: "repeat(7, minmax(44px, 1fr))", gap: 4 }}>
-          {["월", "화", "수", "목", "금", "토", "일"].map((w) => <div key={w} className="faint small" style={{ textAlign: "center" }}>{w}</div>)}
+          {weekHead().map((w) => <div key={w} className="faint small" style={{ textAlign: "center" }}>{w}</div>)}
           {days.map((d) => cell(d, true))}
         </div>
       )}

@@ -24,10 +24,42 @@ export function monthRange(d: Date) {
   return [ymd(a), ymd(b)] as const;
 }
 
-/** Monday-start week containing `s`. */
-export function weekRange(s: string) {
-  const d = parseYmd(s);
-  const dow = (d.getDay() + 6) % 7;
+// ---- first day of the week (설정 › 일반) ----
+/** 0 = Sunday, 1 = Monday. */
+export type WeekStart = 0 | 1;
+const WEEK_START_KEY = "sm-week-start";
+// Cached per device so the first screen already uses it; the synced value in
+// app_settings (week_start) overrides it once loaded.
+let weekStart: WeekStart = (() => {
+  try {
+    return localStorage.getItem(WEEK_START_KEY) === "1" ? 1 : 0;
+  } catch {
+    return 0;
+  }
+})();
+const weekStartListeners = new Set<() => void>();
+export const getWeekStart = () => weekStart;
+/** Calls `fn` whenever the week start changes; returns the unsubscribe. */
+export function subscribeWeekStart(fn: () => void) {
+  weekStartListeners.add(fn);
+  return () => {
+    weekStartListeners.delete(fn);
+  };
+}
+export function setWeekStart(v: WeekStart) {
+  if (v === weekStart) return;
+  weekStart = v;
+  weekStartListeners.forEach((fn) => fn());
+  try {
+    localStorage.setItem(WEEK_START_KEY, String(v));
+  } catch {
+    /* view still follows the in-memory value */
+  }
+}
+
+/** The week containing `s`, starting on the chosen day (or `start`). */
+export function weekRange(s: string, start: WeekStart = weekStart) {
+  const dow = (parseYmd(s).getDay() - start + 7) % 7;
   const a = addDays(s, -dow);
   return [a, addDays(a, 6)] as const;
 }
@@ -46,6 +78,9 @@ export function isoWeek(s: string) {
 export const quarterKey = (s: string) => `${s.slice(0, 4)}-Q${Math.floor((Number(s.slice(5, 7)) - 1) / 3) + 1}`;
 
 export const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+
+/** Weekday names in column order for the chosen week start. */
+export const weekHead = () => (weekStart === 1 ? [...WEEKDAYS.slice(1), WEEKDAYS[0]] : WEEKDAYS);
 
 export function fmtDate(s?: string | null) {
   if (!s) return "";
@@ -74,7 +109,7 @@ export const won = (n?: number | null) => `${Math.round(n ?? 0).toLocaleString("
 export type ViewMode = "day" | "week" | "month";
 export const VIEW_LABEL: Record<ViewMode, string> = { day: "일", week: "주", month: "월" };
 
-/** First and last day (inclusive) of the period containing `anchor`. Weeks start on Monday. */
+/** First and last day (inclusive) of the period containing `anchor`. Weeks start on the chosen day. */
 export function periodRange(mode: ViewMode, anchor: string): readonly [string, string] {
   if (mode === "day") return [anchor, anchor] as const;
   if (mode === "week") return weekRange(anchor);
@@ -109,7 +144,7 @@ export function daysBetween(a: string, b: string) {
   return out;
 }
 
-/** The 6-week (Monday-start) grid that shows the month of `anchor`. */
+/** The 6-week grid that shows the month of `anchor`. */
 export function monthGrid(anchor: string) {
   const [first] = monthRange(parseYmd(anchor));
   const start = weekRange(first)[0];

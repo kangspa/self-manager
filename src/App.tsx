@@ -5,6 +5,8 @@ import { notifyChange } from "./lib/api";
 import { ConfirmHost, toast, Toasts } from "./components/ui";
 import { SyncConflictHost } from "./components/SyncConflict";
 import Home from "./pages/Home";
+import { setWeekStart } from "./lib/date";
+import { useWeekStartSetting } from "./lib/weekStart";
 import { AppLogo, DailyIcon } from "./components/icons";
 
 // Route-level code splitting keeps startup fast.
@@ -52,6 +54,12 @@ function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }
 function Shell() {
   const [drawer, setDrawer] = useState(false);
   const loc = useLocation();
+  // Apply the synced week start (changed in 설정 or on another device); week
+  // views subscribe to it and re-render in place.
+  const { saved: weekStart } = useWeekStartSetting();
+  useEffect(() => {
+    if (weekStart !== null) setWeekStart(weekStart);
+  }, [weekStart]);
   const title = NAV.find(([to]) => (to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(to)))?.[2] ?? "";
   return (
     <div className="app">

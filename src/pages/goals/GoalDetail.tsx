@@ -21,12 +21,12 @@ function periodKeys(type: PT, start?: string | null, end?: string | null): { key
   const out: { key: string; label: string }[] = [];
   const seen = new Set<string>();
   if (type === "week") {
-    let d = weekRange(a)[0];
+    let d = weekRange(a, 1)[0];
     while (d <= b && out.length < 260) {
       const k = isoWeek(d);
       if (!seen.has(k)) {
         seen.add(k);
-        const [s, e] = weekRange(d);
+        const [s, e] = weekRange(d, 1);
         out.push({ key: k, label: `${k.slice(5)} · ${s.slice(5).replace("-", "/")}~${e.slice(5).replace("-", "/")}` });
       }
       d = addDays(d, 7);
