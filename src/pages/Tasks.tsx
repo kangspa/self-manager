@@ -1,61 +1,41 @@
-import { useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
-import { daysUntil, fmtTs, today } from "../lib/date";
+import { daysUntil } from "../lib/date";
 import { Attachments } from "../components/Attachments";
-import { AutoText, confirmDialog, Empty, Field, Modal, PageHeader, SearchBox, Tabs, useDebounced } from "../components/ui";
+import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, Tabs, useDebounced } from "../components/ui";
 
-const PRIORITY = ["보통", "중요", "긴급"];
+/** "11/22" from a created_at timestamp. */
+const created = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear() !== new Date().getFullYear() ? `${String(d.getFullYear()).slice(2)}.` : ""}${d.getMonth() + 1}/${d.getDate()}`;
+};
 
-function dueLabel(due?: string | null) {
-  if (!due) return null;
+function Due({ due, done }: { due?: string | null; done: boolean }) {
+  if (!due) return <span className="faint">-</span>;
   const n = daysUntil(due);
-  const time = due.length > 10 ? ` ${due.slice(11, 16)}` : "";
-  const text = n < 0 ? `${-n}일 지남` : n === 0 ? `오늘${time}` : n === 1 ? `내일${time}` : `${due.slice(5, 10).replace("-", "/")}${time}`;
-  return <span className="meta" style={{ color: n < 0 ? "var(--danger)" : n <= 1 ? "#d9822b" : undefined }}>{text}</span>;
+  const date = `${Number(due.slice(5, 7))}/${Number(due.slice(8, 10))}`;
+  const tail = done ? "" : n < 0 ? ` · ${-n}일 지남` : n === 0 ? " · 오늘" : n === 1 ? " · 내일" : "";
+  return <span style={{ color: done ? undefined : n < 0 ? "var(--danger)" : n <= 1 ? "#d9822b" : undefined }}>{date}{tail}</span>;
 }
 
-function TaskEditor({ task, onClose }: { task: Row; onClose: () => void }) {
-  const [d, setD, flush] = useAutosave({ title: task.title ?? "", note: task.note ?? "" }, (v) => db.upsert("tasks", { id: task.id, ...v }));
-  const close = () => {
-    flush();
-    onClose();
-  };
+/** Inline memo editor shown under a row when it is clicked. */
+function TaskMemo({ task }: { task: Row }) {
+  const [d, setD] = useAutosave({ title: task.title ?? "", note: task.note ?? "" }, (v) => db.upsert("tasks", { id: task.id, ...v }));
   return (
-    <Modal
-      open
-      onClose={close}
-      title="할 일"
-      footer={
-        <>
-          <button className="btn danger" onClick={async () => (await confirmDialog("삭제할까요?", true)) && (await db.remove("tasks", task.id), onClose())}>삭제</button>
-          <span className="spacer" />
-          <button className="btn primary" onClick={close}>완료</button>
-        </>
-      }
-    >
-      <Field label="제목">
-        <input value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} autoFocus />
-      </Field>
-      <div className="grid2" style={{ gap: 10 }}>
-        <Field label="마감 기한">
-          <input type="datetime-local" value={task.due_at ? (task.due_at.length === 10 ? `${task.due_at}T23:59` : task.due_at) : ""} onChange={(e) => db.upsert("tasks", { id: task.id, due_at: e.target.value || null })} />
-        </Field>
-        <Field label="중요도">
-          <select value={task.priority ?? 0} onChange={(e) => db.upsert("tasks", { id: task.id, priority: Number(e.target.value) })}>
-            {PRIORITY.map((p, i) => <option key={i} value={i}>{p}</option>)}
-          </select>
-        </Field>
+    <div className="task-memo" onClick={(e) => e.stopPropagation()}>
+      <input className="bare task-title-edit" value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} placeholder="할 일" />
+      <AutoText value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="메모를 적어 두세요" minRows={2} autoFocus />
+      <div className="row">
+        <label className="row small muted">
+          마감일
+          <input type="date" value={(task.due_at ?? "").slice(0, 10)} onChange={(e) => db.upsert("tasks", { id: task.id, due_at: e.target.value || null })} />
+        </label>
+        <span className="spacer" />
+        <button className="btn sm danger" onClick={async () => (await confirmDialog("이 할 일을 삭제할까요?", true)) && db.remove("tasks", task.id)}>삭제</button>
       </div>
-      <Field label="메모">
-        <AutoText className="boxed" value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="세부 내용" />
-      </Field>
       <Attachments ownerTable="tasks" ownerId={task.id} />
-      <div className="kv" style={{ marginTop: 12 }}>
-        <span>만든 시각</span><span>{fmtTs(task.created_at)}</span>
-        <span>상태</span><span>{task.done_at ? `완료 (${fmtTs(task.done_at)})` : "진행 중"}</span>
-      </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -67,49 +47,97 @@ export default function Tasks() {
   const [openId, setOpenId] = useState<number | null>(null);
   const search = useDebounced(q);
   const filters = tab === "open" ? [{ col: "done_at", op: "null" as const }] : tab === "done" ? [{ col: "done_at", op: "notnull" as const }] : [];
-  const order: [string, "asc" | "desc"][] = tab === "done" ? [["done_at", "desc"]] : [["done_at", "asc"], ["priority", "desc"], ["due_at", "asc"], ["id", "desc"]];
-  const { rows } = useRows("tasks", { filters, search, order, limit: 2000 });
-  // Undated tasks after dated ones
-  const sorted = tab === "done" ? rows : [...rows].sort((a, b) => (!!a.done_at === !!b.done_at ? (a.due_at ? 0 : 1) - (b.due_at ? 0 : 1) : 0));
-  const open = rows.find((r) => r.id === openId);
+  const { rows } = useRows("tasks", { filters, search, order: [["done_at", "asc"], ["due_at", "asc"], ["id", "desc"]], limit: 2000 });
+  // Dated tasks first (soonest due on top), then undated ones, newest first.
+  const sorted = [...rows].sort((a, b) => {
+    if (!!a.done_at !== !!b.done_at) return a.done_at ? 1 : -1;
+    if (tab === "done") return (b.done_at ?? 0) - (a.done_at ?? 0);
+    if (!!a.due_at !== !!b.due_at) return a.due_at ? -1 : 1;
+    return (a.due_at ?? "").localeCompare(b.due_at ?? "") || b.id - a.id;
+  });
 
-  const add = async () => {
-    if (!title.trim()) return;
-    await db.upsert("tasks", { title: title.trim(), due_at: due || null });
+  // Enter pressed while a Korean syllable is still being composed only ends the
+  // composition; remember it and add once the composition is committed. Some
+  // browsers then also send a plain Enter, so a second add right after one is
+  // ignored. The input's own value is used: React state can lag behind the IME.
+  const pendingEnter = useRef(false);
+  const lastAdd = useRef(0);
+  const titleRef = useRef(title);
+  titleRef.current = title;
+  const add = async (raw?: string) => {
+    const t = (raw ?? titleRef.current).trim();
+    if (!t || Date.now() - lastAdd.current < 400) return;
+    lastAdd.current = Date.now();
     setTitle("");
-    setDue("");
+    titleRef.current = "";
+    await db.upsert("tasks", { title: t, due_at: due || null });
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    add();
   };
 
   return (
     <div>
       <PageHeader title="체크리스트" icon="✅" actions={<SearchBox value={q} onChange={setQ} />} />
-      <div className="quick-add">
-        <input placeholder="할 일 추가 (Enter)" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()} />
-        <input type="date" value={due} min={today()} onChange={(e) => setDue(e.target.value)} title="마감일" style={{ flex: "0 0 auto" }} />
-        <button className="btn primary" onClick={add}>추가</button>
-      </div>
+      <form className="task-add" onSubmit={submit}>
+        <input
+          className="task-add-title"
+          placeholder="할 일 추가"
+          value={title}
+          enterKeyHint="done"
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            if (e.nativeEvent.isComposing) pendingEnter.current = true;
+            else add(e.currentTarget.value);
+          }}
+          onCompositionEnd={(e) => {
+            if (pendingEnter.current) {
+              pendingEnter.current = false;
+              add(e.currentTarget.value);
+            }
+          }}
+        />
+        <label className="task-add-due" title="마감일">
+          <span className="small muted">마감일</span>
+          <input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+        </label>
+        <button className="btn primary" type="submit">추가</button>
+      </form>
       <Tabs value={tab} onChange={setTab} items={[["open", "진행 중"], ["done", "완료"], ["all", "전체"]]} />
       {sorted.length === 0 ? (
         <Empty>할 일이 없습니다</Empty>
       ) : (
-        <div className="list">
-          {sorted.map((t) => (
-            <div key={t.id} className="list-row click" onClick={() => setOpenId(t.id)}>
-              <input type="checkbox" checked={!!t.done_at} onClick={(e) => e.stopPropagation()} onChange={() => db.upsert("tasks", { id: t.id, done_at: t.done_at ? null : Date.now() })} />
-              <div className="grow">
-                <div className={t.done_at ? "done-text" : ""}>
-                  {t.priority > 0 && <span style={{ color: t.priority > 1 ? "var(--danger)" : "#d9822b", marginRight: 6 }}>{"!".repeat(t.priority)}</span>}
-                  {t.title}
+        <div className="task-list">
+          <div className="task-row task-head">
+            <span>완료</span>
+            <span>할 일</span>
+            <span>생성일</span>
+            <span>마감일</span>
+          </div>
+          {sorted.map((t) => {
+            const done = !!t.done_at;
+            const opened = openId === t.id;
+            return (
+              <div key={t.id} className={`task-item ${opened ? "open" : ""}`}>
+                <div className="task-row click" onClick={() => setOpenId(opened ? null : t.id)}>
+                  <input type="checkbox" checked={done} aria-label="완료" onClick={(e) => e.stopPropagation()} onChange={() => db.upsert("tasks", { id: t.id, done_at: done ? null : Date.now() })} />
+                  <div className="task-main">
+                    <span className={done ? "done-text" : ""}>{t.title || <span className="faint">제목 없음</span>}</span>
+                    {t.note && !opened && <span className="faint small ellipsis task-note">📝 {t.note.split("\n")[0]}</span>}
+                  </div>
+                  <span className="task-date" data-label="생성">{created(t.created_at)}</span>
+                  <span className="task-date" data-label="마감"><Due due={t.due_at} done={done} /></span>
                 </div>
-                {t.note && <div className="faint small ellipsis">{t.note}</div>}
+                {opened && <TaskMemo key={t.id} task={t} />}
               </div>
-              {!t.done_at && dueLabel(t.due_at)}
-              <span className="meta" title="만든 날">{new Date(t.created_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}</span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
-      {open && <TaskEditor key={open.id} task={open} onClose={() => setOpenId(null)} />}
+      {sorted.length > 0 && <div className="faint small" style={{ marginTop: 10 }}>할 일을 누르면 메모를 적을 수 있습니다.</div>}
     </div>
   );
 }
