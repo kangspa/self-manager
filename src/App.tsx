@@ -96,12 +96,13 @@ function Shell() {
 function useBackendEvents() {
   useEffect(() => {
     const offs: Promise<() => void>[] = [];
-    // The live DB file was swapped (manual / Drive load): rebuild every view from it.
+    // The live DB content was replaced (manual / Drive load, merge): every view
+    // re-reads its data in place instead of reloading the page, so whatever is
+    // being typed stays (autosave drafts keep their edits and save them on top;
+    // ids are unique across devices, and a save to a row deleted meanwhile is dropped).
     offs.push(listen<string>("db-replaced", (e) => {
-      if (!sessionStorage.getItem("sm-toast")) {
-        sessionStorage.setItem("sm-toast", e.payload === "drive" ? "드라이브 DB를 불러왔습니다" : e.payload === "merge" ? "이 기기와 드라이브의 변경을 합쳤습니다" : "수동 저장 DB를 불러왔습니다");
-      }
-      window.location.reload();
+      notifyChange("*");
+      toast(e.payload === "drive" ? "드라이브 DB를 불러왔습니다" : e.payload === "merge" ? "이 기기와 드라이브의 변경을 합쳤습니다" : "수동 저장 DB를 불러왔습니다", "ok");
     }));
     // Backend-side writes (meeting pipeline) don't pass through the JS change bus.
     offs.push(listen("meeting-updated", () => { notifyChange("meetings"); notifyChange("attachments"); }));
@@ -110,11 +111,6 @@ function useBackendEvents() {
     offs.push(listen("closing-backup", () => toast("드라이브에 백업한 뒤 종료합니다…")));
     offs.push(listen<string>("sync-error", (e) => toast(e.payload, "error")));
     offs.push(listen<number>("notif-imported", (e) => e.payload > 0 && toast(`알림에서 지출 ${e.payload}건을 가계부에 추가했습니다`, "ok")));
-    const msg = sessionStorage.getItem("sm-toast");
-    if (msg) {
-      sessionStorage.removeItem("sm-toast");
-      setTimeout(() => toast(msg, "ok"), 300);
-    }
     return () => offs.forEach((p) => p.then((f) => f()));
   }, []);
 }

@@ -33,7 +33,7 @@ export function SyncConflictHost() {
     setBusy(true);
     try {
       const o = await api.syncNow(prefer);
-      sessionStorage.setItem("sm-toast", describe(o));
+      toast(describe(o), "ok");
       setC(null);
     } catch (e) {
       toast(String(e), "error");
