@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, ReactNode, Suspense, useEffect, useState } from "react";
 import { HashRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { notifyChange } from "./lib/api";
 import { ConfirmHost, toast, Toasts } from "./components/ui";
 import { SyncConflictHost } from "./components/SyncConflict";
 import Home from "./pages/Home";
+import { AppLogo, DailyIcon } from "./components/icons";
 
 // Route-level code splitting keeps startup fast.
 const Memos = lazy(() => import("./pages/Memos"));
@@ -19,14 +20,14 @@ const Work = lazy(() => import("./pages/work/Work"));
 const MeetingDetail = lazy(() => import("./pages/work/MeetingDetail"));
 const Settings = lazy(() => import("./pages/settings/Settings"));
 
-export const NAV: [string, string, string][] = [
+export const NAV: [string, ReactNode, string][] = [
   ["/", "🏠", "홈"],
   ["/memos", "📝", "메모"],
   ["/tasks", "✅", "체크리스트"],
   ["/ledger", "💳", "가계부"],
   ["/goals", "🎯", "목표"],
   ["/diary", "📔", "일기"],
-  ["/daily", "📅", "일일 관리"],
+  ["/daily", <DailyIcon key="daily" />, "일일 관리"],
   ["/calendar", "🗓️", "일정"],
   ["/work", "💼", "업무"],
   ["/settings", "⚙️", "설정"],
@@ -35,7 +36,7 @@ export const NAV: [string, string, string][] = [
 function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
-      <div className="brand">Self Manager</div>
+      <div className="brand"><AppLogo size={22} /> Self Manager</div>
       <nav>
         {NAV.map(([to, icon, label]) => (
           <NavLink key={to} to={to} end={to === "/"} className={({ isActive }) => `nav-item ${isActive ? "on" : ""}`} onClick={onNavigate}>
