@@ -93,7 +93,7 @@ export function ConfirmHost() {
 }
 
 // ---------------- Layout bits ----------------
-export function PageHeader({ title, icon, actions, sub }: { title: string; icon?: string; actions?: ReactNode; sub?: ReactNode }) {
+export function PageHeader({ title, icon, actions, sub }: { title: string; icon?: ReactNode; actions?: ReactNode; sub?: ReactNode }) {
   return (
     <div className="page-head">
       <div>
@@ -134,9 +134,10 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }
 
-export function Chip({ label, color, faded, onClick }: { label: string; color?: string | null; faded?: boolean; onClick?: () => void }) {
+export function Chip({ label, color, faded, onClick, icon }: { label: string; color?: string | null; faded?: boolean; onClick?: () => void; icon?: ReactNode }) {
   return (
-    <span className={`chip ${faded ? "faded" : ""} ${onClick ? "clickable" : ""}`} style={{ ["--c" as any]: color || "#9b9b9b" }} onClick={onClick}>
+    <span className={`chip ${faded ? "faded" : ""} ${onClick ? "clickable" : ""} ${icon ? "with-icon" : ""}`} style={{ ["--c" as any]: color || "#9b9b9b" }} onClick={onClick}>
+      {icon}
       {label}
     </span>
   );

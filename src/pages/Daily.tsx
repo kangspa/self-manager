@@ -4,6 +4,8 @@ import { api, db, Row } from "../lib/api";
 import { useLoad, useRows } from "../lib/hooks";
 import { addDays, fmtDate, monthRange, parseYmd, today, weekRange, WEEKDAYS } from "../lib/date";
 import { AutoText, Chip, Empty, Modal, PageHeader } from "../components/ui";
+import { PresetIcon } from "../components/EmojiPicker";
+import { DailyIcon } from "../components/icons";
 
 type Day = { planned: number[]; logs: Row[] };
 
@@ -38,7 +40,7 @@ function DayModal({ date, day, presets, onClose }: { date: string; day: Day; pre
           const planned = day.planned.includes(p.id);
           return (
             <button key={p.id} className={`preset-btn ${done ? "done" : planned ? "planned" : ""}`} style={{ ["--c" as any]: p.color || "var(--accent)" }} onClick={() => toggle(p)}>
-              <span className="dot" />
+              <PresetIcon emoji={p.emoji} color={p.color} />
               {p.label}
               {p.kind === "memo" && " ✎"}
               {done && p.kind !== "memo" && " ✓"}
@@ -64,7 +66,7 @@ function DayModal({ date, day, presets, onClose }: { date: string; day: Day; pre
           const p = presets.find((x) => x.id === l.preset_id);
           return (
             <div key={l.id} className="list-row">
-              <span className="dot" style={{ ["--c" as any]: p?.color || "#9b9b9b" }} />
+              <PresetIcon emoji={p?.emoji} color={p?.color || "#9b9b9b"} />
               <div className="grow">
                 <b>{p?.label ?? "메모"}</b>
                 {l.note && <div className="small" style={{ whiteSpace: "pre-wrap" }}>{l.note}</div>}
@@ -114,8 +116,8 @@ export default function Daily() {
           {pending.length > 0 && <span className="faint small">{pending.length} 남음</span>}
         </div>
         <div className="row" style={{ gap: 4 }}>
-          {checks.map((l) => { const p = pmap.get(l.preset_id); return p ? <Chip key={l.id} label={p.label} color={p.color} /> : null; })}
-          {pending.map((id) => { const p = pmap.get(id); return p ? <Chip key={`p${id}`} label={p.label} color={p.color} faded /> : null; })}
+          {checks.map((l) => { const p = pmap.get(l.preset_id); return p ? <Chip key={l.id} label={compact && p.emoji ? "" : p.label} color={p.color} icon={p.emoji ? <PresetIcon emoji={p.emoji} color={p.color} size={16} /> : undefined} /> : null; })}
+          {pending.map((id) => { const p = pmap.get(id); return p ? <Chip key={`p${id}`} label={compact && p.emoji ? "" : p.label} color={p.color} icon={p.emoji ? <PresetIcon emoji={p.emoji} color={p.color} size={16} /> : undefined} faded /> : null; })}
         </div>
         {!compact && notes.map((l) => (
           <div key={l.id} className="daily-note" style={{ ["--c" as any]: pmap.get(l.preset_id)?.color }}>{l.note}</div>
@@ -127,7 +129,7 @@ export default function Daily() {
 
   return (
     <div>
-      <PageHeader title="일일 관리" icon="📅" sub="매일 할 일과 한 일을 한눈에" actions={<Link to="/settings#daily" className="btn">항목·반복 설정</Link>} />
+      <PageHeader title="일일 관리" icon={<DailyIcon size={26} />} sub="매일 할 일과 한 일을 한눈에" actions={<Link to="/settings#daily" className="btn">항목·반복 설정</Link>} />
       <div className="row" style={{ marginBottom: 14 }}>
         <div className="seg">
           <button className={mode === "week" ? "on" : ""} onClick={() => setMode("week")}>주</button>

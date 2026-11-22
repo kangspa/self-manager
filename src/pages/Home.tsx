@@ -4,6 +4,7 @@ import { api, db, Row } from "../lib/api";
 import { useLoad, useRows } from "../lib/hooks";
 import { addDays, daysUntil, fmtDate, today, WEEKDAYS, won } from "../lib/date";
 import { Chip, PageHeader, run } from "../components/ui";
+import { PresetIcon } from "../components/EmojiPicker";
 
 export default function Home() {
   const t = today();
@@ -66,7 +67,7 @@ export default function Home() {
           <div className="section-title">오늘의 일일 관리</div>
           <div className="row">
             {presets.rows.filter((p) => day?.planned.includes(p.id) || doneIds.has(p.id)).map((p) => (
-              <Chip key={p.id} label={p.label} color={p.color} faded={!doneIds.has(p.id)} />
+              <Chip key={p.id} label={p.label} color={p.color} icon={p.emoji ? <PresetIcon emoji={p.emoji} color={p.color} size={16} /> : undefined} faded={!doneIds.has(p.id)} />
             ))}
             {!day?.planned.length && !day?.logs.length && <span className="faint small">기록 없음 · 눌러서 추가</span>}
           </div>

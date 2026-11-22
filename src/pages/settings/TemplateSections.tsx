@@ -2,7 +2,9 @@ import { useState } from "react";
 import { db, Row } from "../../lib/api";
 import { useRows } from "../../lib/hooks";
 import { WEEKDAYS } from "../../lib/date";
-import { confirmDialog, Empty, Field } from "../../components/ui";
+import { confirmDialog, Empty, Field, Modal } from "../../components/ui";
+import { EmojiPicker, PresetIcon } from "../../components/EmojiPicker";
+import { ColorPicker } from "../../components/ColorPicker";
 import { DiaryField, parseFields } from "../Diary";
 import { COLORS } from "../Memos";
 
@@ -70,8 +72,32 @@ export function DiarySection() {
 
 type RuleType = "" | "daily" | "weekday" | "monthday" | "date";
 
+/** Emoji + background colour of a daily item. Without an emoji the colour is a dot, as before. */
+function IconModal({ p, onClose }: { p: Row; onClose: () => void }) {
+  const set = (row: Record<string, unknown>) => db.upsert("daily_presets", { id: p.id, ...row });
+  return (
+    <Modal open wide onClose={onClose} title={`${p.label} 아이콘과 색`} footer={<button className="btn primary" onClick={onClose}>완료</button>}>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <span className="muted small">미리 보기</span>
+        <span className="preset-btn done" style={{ ["--c" as any]: p.color || "var(--accent)" }}><PresetIcon emoji={p.emoji} color={p.color} />{p.label}</span>
+      </div>
+      <div className="icon-edit">
+        <div>
+          <div className="field-label" style={{ marginBottom: 6 }}>이모지</div>
+          <EmojiPicker value={p.emoji ?? null} onChange={(e) => set({ emoji: e })} />
+        </div>
+        <div>
+          <div className="field-label" style={{ marginBottom: 6 }}>배경색 {p.emoji ? "(이모지 뒤 원 색)" : "(이모지가 없으면 점 색)"}</div>
+          <ColorPicker value={p.color ?? null} onChange={(c) => set({ color: c })} />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function PresetRow({ p, rules, i, list }: { p: Row; rules: Row[]; i: number; list: Row[] }) {
   const [label, setLabel] = useState(p.label);
+  const [iconOpen, setIconOpen] = useState(false);
   const rule = rules[0];
   const type = (rule?.rule_type ?? "") as RuleType;
   const value: string = rule?.value ?? "";
@@ -92,9 +118,8 @@ function PresetRow({ p, rules, i, list }: { p: Row; rules: Row[]; i: number; lis
   return (
     <div className="card" style={{ marginBottom: 8, opacity: p.archived ? 0.5 : 1 }}>
       <div className="row nowrap">
-        <select value={p.color ?? ""} onChange={(e) => db.upsert("daily_presets", { id: p.id, color: e.target.value || null })} style={{ width: 44, padding: 2, background: p.color || "var(--bg-hover)", color: "transparent" }}>
-          {COLORS.map((c) => <option key={c} value={c} style={{ background: c || "#ddd" }}>{c || "없음"}</option>)}
-        </select>
+        <button className="btn icon-pick" onClick={() => setIconOpen(true)} title="이모지·배경색"><PresetIcon emoji={p.emoji} color={p.color} /></button>
+        {iconOpen && <IconModal p={p} onClose={() => setIconOpen(false)} />}
         <input className="grow" value={label} onChange={(e) => setLabel(e.target.value)} onBlur={() => label.trim() && label !== p.label && db.upsert("daily_presets", { id: p.id, label: label.trim() })} />
         <select value={p.kind} onChange={(e) => db.upsert("daily_presets", { id: p.id, kind: e.target.value })} style={{ width: 110 }}>
           <option value="check">체크형</option>
