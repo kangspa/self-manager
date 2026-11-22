@@ -70,6 +70,55 @@ export function relTs(ms?: number | null) {
 
 export const won = (n?: number | null) => `${Math.round(n ?? 0).toLocaleString("ko-KR")}원`;
 
+// ---- day / week / month views (shared by diary, calendar, work) ----
+export type ViewMode = "day" | "week" | "month";
+export const VIEW_LABEL: Record<ViewMode, string> = { day: "일", week: "주", month: "월" };
+
+/** First and last day (inclusive) of the period containing `anchor`. Weeks start on Monday. */
+export function periodRange(mode: ViewMode, anchor: string): readonly [string, string] {
+  if (mode === "day") return [anchor, anchor] as const;
+  if (mode === "week") return weekRange(anchor);
+  return monthRange(parseYmd(anchor));
+}
+
+export function shiftPeriod(mode: ViewMode, anchor: string, n: number) {
+  if (mode === "day") return addDays(anchor, n);
+  if (mode === "week") return addDays(anchor, 7 * n);
+  const d = parseYmd(anchor);
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  // Keep the day when the target month has it (31 Jan + 1 month -> 28/29 Feb).
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  return ymd(d);
+}
+
+export function periodLabel(mode: ViewMode, anchor: string) {
+  const d = parseYmd(anchor);
+  if (mode === "day") return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEKDAYS[d.getDay()]})`;
+  if (mode === "month") return `${d.getFullYear()}년 ${d.getMonth() + 1}월`;
+  const [a, b] = weekRange(anchor);
+  const pa = parseYmd(a), pb = parseYmd(b);
+  return `${pa.getMonth() + 1}/${pa.getDate()} ~ ${pb.getMonth() + 1}/${pb.getDate()}`;
+}
+
+/** Every day from `a` to `b` inclusive. */
+export function daysBetween(a: string, b: string) {
+  const out: string[] = [];
+  for (let d = a; d <= b; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+/** The 6-week (Monday-start) grid that shows the month of `anchor`. */
+export function monthGrid(anchor: string) {
+  const [first] = monthRange(parseYmd(anchor));
+  const start = weekRange(first)[0];
+  return daysBetween(start, addDays(start, 41));
+}
+
+/** Whether the date range [s, e] (e optional = single day) touches [a, b]. */
+export const overlaps = (s: string, e: string | null | undefined, a: string, b: string) => s.slice(0, 10) <= b && (e || s).slice(0, 10) >= a;
+
 /** Days from today to `s` (negative = past). */
 export function daysUntil(s: string) {
   return Math.round((parseYmd(s).getTime() - parseYmd(today()).getTime()) / 86400000);

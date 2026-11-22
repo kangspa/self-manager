@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { db, Row } from "../lib/api";
 import { useAutosave, useLoad, useRows } from "../lib/hooks";
-import { addDays, fmtDate, today, WEEKDAYS, parseYmd } from "../lib/date";
+import { daysBetween, fmtDate, monthGrid } from "../lib/date";
 import { Attachments } from "../components/Attachments";
+import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../components/Period";
 import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, useDebounced } from "../components/ui";
 
 export type DiaryField = { key: string; label: string; type: "text" | "longtext" | "rating" | "number" | "checkbox" | "select"; options?: string };
@@ -103,50 +104,94 @@ function Entry({ date, entry, templates }: { date: string; entry: Row | undefine
   );
 }
 
+/** Text of an entry for previews (all filled text fields, in order). */
+function previewOf(r: Row) {
+  try {
+    return Object.values(JSON.parse(r.values_json)).filter((x) => typeof x === "string" && x).join(" · ");
+  } catch {
+    return "";
+  }
+}
+
+function DayEditor({ date, templates }: { date: string; templates: Row[] }) {
+  // Loaded once per date (not on every write) so the editor is not remounted while typing.
+  const { data: loaded } = useLoad(async () => ({ date, entry: (await db.list("diary_entries", { filters: [{ col: "date", op: "=", value: date }], limit: 1 }))[0] }), [date], []);
+  if (templates.length === 0) return <Empty>설정 › 일기 템플릿에서 템플릿을 만들어 주세요</Empty>;
+  return loaded?.date === date ? <Entry key={date} date={date} entry={loaded.entry} templates={templates} /> : null;
+}
+
 export default function Diary() {
-  const [date, setDate] = useState(today());
+  const p = usePeriod("diary", "day");
   const [q, setQ] = useState("");
   const search = useDebounced(q);
   const templates = useRows("diary_templates", { order: [["sort", "asc"], ["id", "asc"]] });
-  // Loaded once per date (not on every write) so the editor is not remounted while typing.
-  const { data: loaded } = useLoad(async () => ({ date, entry: (await db.list("diary_entries", { filters: [{ col: "date", op: "=", value: date }], limit: 1 }))[0] }), [date], []);
+  const [from, to] = p.mode === "month" ? [monthGrid(p.anchor)[0], monthGrid(p.anchor)[41]] : p.range;
+  const inRange = useRows("diary_entries", { filters: [{ col: "date", op: ">=", value: from }, { col: "date", op: "<=", value: to }], order: [["date", "asc"]], limit: 100 });
   const recent = useRows("diary_entries", { search, order: [["date", "desc"]], limit: 60 });
-  const d = parseYmd(date);
+  const byDate = new Map(inRange.rows.map((r) => [r.date, r]));
+  const stars = (r?: Row) => (r?.mood ? "★".repeat(r.mood) : "");
 
   return (
     <div>
       <PageHeader title="일기" icon="📔" actions={<SearchBox value={q} onChange={setQ} placeholder="일기 검색" />} />
-      <div className="split">
-        <div>
-          <div className="row" style={{ marginBottom: 14 }}>
-            <button className="icon-btn" onClick={() => setDate(addDays(date, -1))}>‹</button>
-            <h2 style={{ fontSize: 20 }}>{d.getFullYear()}년 {d.getMonth() + 1}월 {d.getDate()}일 {WEEKDAYS[d.getDay()]}요일</h2>
-            <button className="icon-btn" onClick={() => setDate(addDays(date, 1))}>›</button>
-            <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
-            {date !== today() && <button className="btn sm" onClick={() => setDate(today())}>오늘</button>}
-          </div>
-          {loaded?.date === date && templates.rows.length > 0 && <Entry key={date} date={date} entry={loaded.entry} templates={templates.rows} />}
+      <PeriodNav p={p} />
+      {search ? (
+        <div className="list">
+          {recent.rows.map((r) => (
+            <div key={r.id} className="list-row click" onClick={() => { setQ(""); p.openDay(r.date); }} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+              <span className="small"><b>{fmtDate(r.date)}</b> {stars(r)}</span>
+              <span className="faint small ellipsis" style={{ maxWidth: "100%" }}>{previewOf(r)}</span>
+            </div>
+          ))}
+          {recent.rows.length === 0 && <Empty>찾는 일기가 없습니다</Empty>}
         </div>
-        <div>
-          <div className="section-title">{search ? "검색 결과" : "최근 일기"}</div>
-          <div className="list">
-            {recent.rows.map((r) => {
-              let preview = "";
-              try {
-                const v = JSON.parse(r.values_json);
-                preview = Object.values(v).filter((x) => typeof x === "string" && x).join(" · ");
-              } catch { /* malformed values */ }
-              return (
-                <div key={r.id} className={`list-row click`} onClick={() => setDate(r.date)} style={{ background: r.date === date ? "var(--bg-hover)" : undefined, flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                  <span className="small"><b>{fmtDate(r.date)}</b> {r.mood ? "★".repeat(r.mood) : ""}</span>
-                  <span className="faint small ellipsis" style={{ maxWidth: "100%" }}>{preview}</span>
+      ) : p.mode === "day" ? (
+        <div className="split">
+          <DayEditor date={p.anchor} templates={templates.rows} />
+          <div>
+            <div className="section-title">최근 일기</div>
+            <div className="list">
+              {recent.rows.map((r) => (
+                <div key={r.id} className="list-row click" onClick={() => p.setAnchor(r.date)} style={{ background: r.date === p.anchor ? "var(--bg-hover)" : undefined, flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                  <span className="small"><b>{fmtDate(r.date)}</b> {stars(r)}</span>
+                  <span className="faint small ellipsis" style={{ maxWidth: "100%" }}>{previewOf(r)}</span>
                 </div>
-              );
-            })}
-            {recent.rows.length === 0 && <Empty>아직 일기가 없습니다</Empty>}
+              ))}
+              {recent.rows.length === 0 && <Empty>아직 일기가 없습니다</Empty>}
+            </div>
           </div>
         </div>
-      </div>
+      ) : p.mode === "week" ? (
+        <WeekColumns
+          days={daysBetween(from, to)}
+          onPick={p.openDay}
+          render={(d) => {
+            const r = byDate.get(d);
+            return r ? (
+              <div className="click" onClick={() => p.openDay(d)}>
+                {stars(r) && <div className="diary-stars">{stars(r)}</div>}
+                <div className="small diary-preview">{previewOf(r) || <span className="faint">내용 없음</span>}</div>
+              </div>
+            ) : (
+              <button className="btn sm ghost faint" onClick={() => p.openDay(d)}>+ 쓰기</button>
+            );
+          }}
+        />
+      ) : (
+        <MonthGrid
+          anchor={p.anchor}
+          onPick={p.openDay}
+          render={(d) => {
+            const r = byDate.get(d);
+            return r ? (
+              <>
+                {stars(r) && <span className="diary-stars small">{stars(r)}</span>}
+                <span className="cal-ev">{previewOf(r) || "일기"}</span>
+              </>
+            ) : null;
+          }}
+        />
+      )}
     </div>
   );
 }

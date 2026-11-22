@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { api, db, Row } from "../lib/api";
 import { useRows } from "../lib/hooks";
-import { addDays, fmtDate, monthRange, nowLocal, parseYmd, today, WEEKDAYS, ymd } from "../lib/date";
+import { addDays, daysBetween, fmtDate, monthGrid, nowLocal, overlaps, today, ymd } from "../lib/date";
+import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../components/Period";
 import { scheduleReminder, cancelReminder } from "../lib/reminders";
 import { AutoText, confirmDialog, Empty, Field, Modal, PageHeader, run, toast } from "../components/ui";
 import { COLORS } from "./Memos";
@@ -66,20 +67,47 @@ function EventEditor({ ev, onClose }: { ev: Partial<Row>; onClose: () => void })
   );
 }
 
+/** "09:00~10:00" / "종일" / multi-day ranges, as seen from day `d`. */
+function timeText(e: Row, d: string) {
+  if (e.all_day) return "종일";
+  const s = e.start_at.slice(0, 10), en = (e.end_at || e.start_at).slice(0, 10);
+  const st = s === d ? e.start_at.slice(11, 16) : "…";
+  const et = e.end_at ? (en === d ? e.end_at.slice(11, 16) : "…") : "";
+  return et ? `${st}~${et}` : st;
+}
+
+function EventRows({ events, day, onOpen }: { events: Row[]; day: string; onOpen: (e: Row) => void }) {
+  if (events.length === 0) return <Empty>일정이 없습니다</Empty>;
+  return (
+    <div className="list">
+      {events.map((e) => (
+        <div key={e.id} className="list-row click" onClick={() => onOpen(e)}>
+          <span className="dot" style={{ ["--c" as any]: e.color || "var(--accent)" }} />
+          <span className="meta" style={{ width: 96 }}>{timeText(e, day)}</span>
+          <div className="grow">
+            <b>{e.title}</b>
+            {e.location && <span className="faint small"> · {e.location}</span>}
+            {e.description && <div className="faint small ellipsis">{e.description}</div>}
+          </div>
+          {e.remind_minutes != null && <span className="faint small">🔔</span>}
+          {e.gcal_id && <span className="badge">Google</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Calendar() {
-  const [cur, setCur] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const p = usePeriod("calendar", "month");
   const [sel, setSel] = useState(today());
   const [edit, setEdit] = useState<Partial<Row> | null>(null);
-  const [mFrom] = monthRange(cur);
-  const gridFrom = addDays(mFrom, -parseYmd(mFrom).getDay());
-  // Always 6 weeks so the grid height never jumps between months.
-  const gridTo = addDays(gridFrom, 41);
-  const { rows } = useRows("events", { filters: [{ col: "start_at", op: "<=", value: `${gridTo}T99` }, { col: "start_at", op: ">=", value: addDays(gridFrom, -40) }], order: [["start_at", "asc"]], limit: 5000 });
-  const t = today();
-  const days: string[] = [];
-  for (let d = gridFrom; d <= gridTo; d = addDays(d, 1)) days.push(d);
-  const onDay = (d: string) => rows.filter((e) => { const s = e.start_at.slice(0, 10); const en = (e.end_at || e.start_at).slice(0, 10); return s <= d && d <= en; });
-  const selEvents = onDay(sel);
+  const grid = monthGrid(p.anchor);
+  const [from, to] = p.mode === "month" ? [grid[0], grid[41]] : p.range;
+  // Events that started up to 40 days before the range can still be running in it.
+  const { rows } = useRows("events", { filters: [{ col: "start_at", op: "<=", value: `${to}T99` }, { col: "start_at", op: ">=", value: addDays(from, -40) }], order: [["all_day", "desc"], ["start_at", "asc"]], limit: 5000 });
+  const onDay = (d: string) => rows.filter((e) => overlaps(e.start_at, e.end_at, d, d));
+  const newAt = (d: string) => setEdit({ start_at: `${d}T09:00`, end_at: `${d}T10:00` });
+  const focus = p.mode === "month" ? sel : p.anchor;
 
   return (
     <div>
@@ -89,49 +117,59 @@ export default function Calendar() {
         actions={
           <>
             <button className="btn" onClick={async () => { const r = await run(() => api.gcalSync()); if (r) toast(`구글 캘린더 동기화 완료: 보냄 ${r.pushed} · 받음 ${r.pulled} · 삭제 ${r.deleted}`, "ok"); }}>구글 캘린더 동기화</button>
-            <button className="btn primary" onClick={() => setEdit({ start_at: `${sel}T09:00`, end_at: `${sel}T10:00` })}>+ 일정</button>
+            <button className="btn primary" onClick={() => newAt(focus)}>+ 일정</button>
           </>
         }
       />
-      <div className="row" style={{ marginBottom: 10 }}>
-        <button className="icon-btn" onClick={() => setCur(new Date(cur.getFullYear(), cur.getMonth() - 1, 1))}>‹</button>
-        <b style={{ fontSize: 17 }}>{cur.getFullYear()}년 {cur.getMonth() + 1}월</b>
-        <button className="icon-btn" onClick={() => setCur(new Date(cur.getFullYear(), cur.getMonth() + 1, 1))}>›</button>
-        <button className="btn sm" onClick={() => { const d = new Date(); setCur(new Date(d.getFullYear(), d.getMonth(), 1)); setSel(today()); }}>오늘</button>
-      </div>
-      <div className="cal">
-        {WEEKDAYS.map((w, i) => <div key={w} className={`cal-h ${i === 0 ? "sun" : i === 6 ? "sat" : ""}`}>{w}</div>)}
-        {days.map((d) => {
-          const evs = onDay(d);
-          const dd = parseYmd(d);
-          return (
-            <div key={d} className={`cal-d ${dd.getMonth() !== cur.getMonth() ? "other" : ""} ${d === t ? "today" : ""} ${d === sel ? "sel" : ""}`} onClick={() => setSel(d)} onDoubleClick={() => setEdit({ start_at: `${d}T09:00`, end_at: `${d}T10:00` })}>
-              <span className={`cal-n ${dd.getDay() === 0 ? "sun" : dd.getDay() === 6 ? "sat" : ""}`}>{dd.getDate()}</span>
-              {evs.slice(0, 3).map((e) => (
-                <div key={e.id} className="cal-ev" style={{ ["--c" as any]: e.color || undefined }} onClick={(x) => { x.stopPropagation(); setEdit(e); }}>
-                  {!e.all_day && e.start_at.slice(0, 10) === d ? `${e.start_at.slice(11, 16)} ` : ""}{e.title}
-                </div>
-              ))}
-              {evs.length > 3 && <span className="cal-more">+{evs.length - 3}</span>}
+      <PeriodNav p={p} />
+      {p.mode === "day" && <EventRows events={onDay(p.anchor)} day={p.anchor} onOpen={setEdit} />}
+      {p.mode === "week" && (
+        <WeekColumns
+          days={daysBetween(from, to)}
+          onPick={p.openDay}
+          action={(d) => <button className="icon-btn" aria-label="일정 추가" onClick={() => newAt(d)}>+</button>}
+          render={(d) =>
+            onDay(d).map((e) => (
+              <div key={e.id} className="cal-ev click" style={{ ["--c" as any]: e.color || undefined, whiteSpace: "normal" }} onClick={() => setEdit(e)}>
+                <span className="faint">{timeText(e, d)}</span> {e.title}
+              </div>
+            ))
+          }
+        />
+      )}
+      {p.mode === "month" && (
+        <>
+          <MonthGrid
+            anchor={p.anchor}
+            selected={sel}
+            onPick={setSel}
+            onDouble={newAt}
+            render={(d) => {
+              const evs = onDay(d);
+              return (
+                <>
+                  {evs.slice(0, 3).map((e) => (
+                    <div key={e.id} className="cal-ev" style={{ ["--c" as any]: e.color || undefined }} onClick={(x) => { x.stopPropagation(); setEdit(e); }}>
+                      {!e.all_day && e.start_at.slice(0, 10) === d ? `${e.start_at.slice(11, 16)} ` : ""}{e.title}
+                    </div>
+                  ))}
+                  {evs.length > 3 && <span className="cal-more">+{evs.length - 3}</span>}
+                </>
+              );
+            }}
+          />
+          <div className="section">
+            <div className="section-title">
+              {fmtDate(sel)} 일정
+              <span className="row">
+                <button className="btn sm" onClick={() => p.openDay(sel)}>이 날 보기</button>
+                <button className="btn sm" onClick={() => newAt(sel)}>+ 추가</button>
+              </span>
             </div>
-          );
-        })}
-      </div>
-      <div className="section">
-        <div className="section-title">{fmtDate(sel)} 일정 <button className="btn sm" onClick={() => setEdit({ start_at: `${sel}T09:00`, end_at: `${sel}T10:00` })}>+ 추가</button></div>
-        {selEvents.length === 0 && <Empty>일정이 없습니다</Empty>}
-        <div className="list">
-          {selEvents.map((e) => (
-            <div key={e.id} className="list-row click" onClick={() => setEdit(e)}>
-              <span className="dot" style={{ ["--c" as any]: e.color || "var(--accent)" }} />
-              <span className="meta" style={{ width: 90 }}>{e.all_day ? "종일" : `${e.start_at.slice(11, 16)}${e.end_at ? `~${e.end_at.slice(11, 16)}` : ""}`}</span>
-              <div className="grow"><b>{e.title}</b>{e.location && <span className="faint small"> · {e.location}</span>}</div>
-              {e.remind_minutes != null && <span className="faint small">🔔</span>}
-              {e.gcal_id && <span className="badge">Google</span>}
-            </div>
-          ))}
-        </div>
-      </div>
+            <EventRows events={onDay(sel)} day={sel} onOpen={setEdit} />
+          </div>
+        </>
+      )}
       {edit && <EventEditor key={edit.id ?? `new-${ymd(new Date())}`} ev={edit} onClose={() => setEdit(null)} />}
     </div>
   );
