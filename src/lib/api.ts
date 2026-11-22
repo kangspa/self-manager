@@ -102,6 +102,12 @@ export type Attachment = Row & {
 export type Parsed = { name: string; amount: number; purchased_at: string };
 
 export const api = {
+  /** Move a work item with its sub-items and AI notes to another project (one transaction). */
+  async workMove(id: number, projectId: number | null) {
+    await invoke("work_move", { id, projectId });
+    notifyChange("work_logs");
+    notifyChange("meetings");
+  },
   expenseDashboard: (from: string, to: string) => invoke<any>("expense_dashboard", { from, to }),
   subscriptionSchedule: (from: string, to: string) => invoke<any[]>("subscription_schedule", { from, to }),
   dailyView: (from: string, to: string) => invoke<Record<string, { planned: number[]; logs: Row[] }>>("daily_view", { from, to }),

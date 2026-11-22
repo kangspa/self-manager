@@ -7,7 +7,7 @@ import { useAutosave, useLoad, useRows } from "../../lib/hooks";
 import { MeetingRecorder } from "../../lib/recorder";
 import { today } from "../../lib/date";
 import { Attachments } from "../../components/Attachments";
-import { confirmDialog, Empty, Field, Markdown, run, toast } from "../../components/ui";
+import { confirmDialog, Empty, Markdown, run, toast } from "../../components/ui";
 
 type Seg = { start: number; end: number; text: string };
 
@@ -90,12 +90,30 @@ function Recorder({ meeting }: { meeting: Row }) {
   );
 }
 
+export const MEETING_STATUS: Record<string, string> = { recording: "녹음 중", importing: "가져오는 중", recorded: "녹음 대기", transcribing: "받아쓰는 중", transcribed: "받아쓰기 완료", summarizing: "요약 중", done: "정리 완료", error: "오류" };
+
+/** Full page for one AI note (route /work/meeting/:id). */
 export default function MeetingDetail() {
   const { id } = useParams();
-  const mid = Number(id);
   const nav = useNavigate();
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <button className="btn ghost" onClick={() => (window.history.length > 1 ? nav(-1) : nav("/work"))}>‹ 업무</button>
+      </div>
+      <MeetingPanel mid={Number(id)} onDeleted={() => nav("/work")} />
+    </div>
+  );
+}
+
+/**
+ * An AI note: recording, on-device transcription and summary. Used as a full
+ * page and embedded inside a work item or project (like Notion's AI notes).
+ */
+export function MeetingPanel({ mid, onDeleted, embedded }: { mid: number; onDeleted: () => void; embedded?: boolean }) {
   const { data: m } = useLoad(() => db.get("meetings", mid), [mid], ["meetings"]);
   const projects = useRows("projects", { filters: [{ col: "archived", op: "=", value: 0 }] });
+  const { data: item } = useLoad(async () => (m?.work_log_id ? db.get("work_logs", m.work_log_id) : null), [m?.work_log_id], ["work_logs"]);
   const [progress, setProgress] = useState<number | null>(null);
   const [llm, setLlm] = useState<{ done: number; total: number; stage: string } | null>(null);
   const [title, setTitle] = useAutosave(m?.title ?? "", (v) => db.upsert("meetings", { id: mid, title: v }));
@@ -120,27 +138,37 @@ export default function MeetingDetail() {
     await db.bulk(items.map((t) => ({ table: "tasks" as const, row: { title: t, note: `회의: ${m.title}` } })));
     toast(`체크리스트에 ${items.length}개를 추가했습니다`, "ok");
   };
+  // The note belongs to an item: put the summary into that item. Otherwise
+  // (a project-level note) it becomes a new work record of the project.
   const toWorkLog = async () => {
-    await db.upsert("work_logs", { date: m.date ?? today(), project_id: m.project_id, title: `회의: ${m.title}`, body: summary });
-    toast("업무 기록에 추가했습니다", "ok");
+    if (item) {
+      await db.upsert("work_logs", { id: item.id, body: `${item.body ? `${item.body}\n\n` : ""}${summary}` });
+      toast(`'${item.title || "업무"}' 내용에 요약을 붙였습니다`, "ok");
+    } else {
+      await db.upsert("work_logs", { date: m.date ?? today(), project_id: m.project_id, kind: "log", title: `회의: ${m.title}`, body: summary });
+      toast("업무 기록으로 추가했습니다", "ok");
+    }
   };
 
   return (
-    <div>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <button className="btn ghost" onClick={() => nav("/work")}>‹ 업무</button>
-        <span className="spacer" />
-        <button className="btn danger sm" onClick={async () => { if (await confirmDialog("회의록과 녹음 파일을 삭제할까요?", true)) { await api.meetingDelete(mid); nav("/work"); } }}>삭제</button>
+    <div className={embedded ? "ai-note-panel" : ""}>
+      <div className="row nowrap">
+        <input className={embedded ? "bare grow ai-note-title" : "title-input"} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="AI 노트 제목" />
+        <button className="btn danger sm" onClick={async () => { if (await confirmDialog("이 AI 노트와 녹음 파일을 삭제할까요?", true)) { await api.meetingDelete(mid); onDeleted(); } }}>삭제</button>
       </div>
-      <input className="title-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="회의 제목" />
-      <div className="grid3" style={{ marginTop: 12 }}>
-        <Field label="날짜"><input type="date" value={m.date ?? ""} onChange={(e) => db.upsert("meetings", { id: mid, date: e.target.value })} /></Field>
-        <Field label="프로젝트">
-          <select value={m.project_id ?? ""} onChange={(e) => db.upsert("meetings", { id: mid, project_id: e.target.value ? Number(e.target.value) : null })}>
-            <option value="">없음</option>
-            {projects.rows.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
+      <div className="row" style={{ margin: "8px 0 12px" }}>
+        <label className="row small muted">날짜 <input type="date" value={m.date ?? ""} onChange={(e) => db.upsert("meetings", { id: mid, date: e.target.value })} /></label>
+        {/* A note inside a work item follows that item's project (moving the item moves it). */}
+        {!embedded && !m.work_log_id && (
+          <label className="row small muted">
+            프로젝트
+            <select value={m.project_id ?? ""} onChange={(e) => db.upsert("meetings", { id: mid, project_id: e.target.value ? Number(e.target.value) : null })}>
+              <option value="">없음</option>
+              {projects.rows.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        )}
+        {!embedded && item && <span className="small muted">업무: <b>{item.title || "제목 없음"}</b></span>}
       </div>
 
       <Recorder meeting={m} />
@@ -173,7 +201,7 @@ export default function MeetingDetail() {
           회의록
           <span className="row">
             {items.length > 0 && <button className="btn sm" onClick={toTasks}>할 일 {items.length}개 → 체크리스트</button>}
-            {summary && <button className="btn sm" onClick={toWorkLog}>업무 기록에 추가</button>}
+            {summary && <button className="btn sm" onClick={toWorkLog}>{item ? "업무 내용에 요약 붙이기" : "업무 기록으로 추가"}</button>}
             <button className="btn sm" onClick={() => setEditSummary(!editSummary)}>{editSummary ? "보기" : "편집"}</button>
           </span>
         </div>
