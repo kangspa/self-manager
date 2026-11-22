@@ -74,6 +74,12 @@ src-tauri/android-src/  Kotlin: 알림 리스너, 구글 인증, 앱 목록
 - 동기화를 끄거나 지운 파일은 드라이브에서도 정리합니다. 단, 이 기기 DB가 드라이브 DB와 같을 때만 정리해서, 오래된 기기가 다른 기기의 새 파일을 지우지 않습니다.
 - DB 동기화가 끝나면 파일은 백그라운드에서 주고받아 화면을 막지 않습니다. 큰 파일과 DB 백업 모두 이어 올리기(resumable) 업로드라 크기 제한이 없습니다.
 
+### 업무
+
+- 프로젝트 안에 **세부 단계(분기) · 업무 일정 · 업무 기록**을 만들고, 어느 항목에든 **AI 노트**(회의 녹음·받아쓰기·요약)를 붙입니다. 프로젝트에는 전체 일정(시작~종료)과 단계·일정 막대가 있습니다.
+- 모든 업무는 `work_logs` 한 테이블입니다(`kind` 종류, `parent_id` 상위 단계, `date`~`end_date` 기간). 화면만 프로젝트별 / 날짜별(일·주·월)로 나눠 보여 줍니다.
+- 일기·일정·업무 날짜별 보기는 같은 일·주·월 전환을 씁니다(`src/components/Period.tsx`).
+
 ## 개발 환경
 
 필요한 것 (Windows):
@@ -86,7 +92,8 @@ src-tauri/android-src/  Kotlin: 알림 리스너, 구글 인증, 앱 목록
 npm install
 npm run app                            # PC에서 개발 실행 (1420이 사용 중이면 빈 포트를 찾아 엶)
 npm run tauri dev                      # 위와 같지만 1420 고정
-npm run tauri build                    # Windows 설치 파일(NSIS) 생성
+npm run build:pc                       # Windows 빌드 → release\SelfManager.exe(설치 없이 실행) + 설치 파일
+npm run tauri build                    # 위와 같지만 결과가 src-tauri\target\release 아래에만 생김
 npm run tauri build -- --no-default-features   # 온디바이스 AI(whisper·llama) 없이 빌드
 ```
 
