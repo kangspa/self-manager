@@ -3,7 +3,7 @@ import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
 import { daysUntil } from "../lib/date";
 import { Attachments } from "../components/Attachments";
-import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, Tabs, useDebounced } from "../components/ui";
+import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, Tabs, toast, useDebounced } from "../components/ui";
 
 /** "11/22" from a created_at timestamp. */
 const created = (ms: number) => {
@@ -20,12 +20,12 @@ function Due({ due, done }: { due?: string | null; done: boolean }) {
 }
 
 /** Inline memo editor shown under a row when it is clicked. */
-function TaskMemo({ task }: { task: Row }) {
+function TaskMemo({ task, focusTitle }: { task: Row; focusTitle?: boolean }) {
   const [d, setD] = useAutosave({ title: task.title ?? "", note: task.note ?? "" }, (v) => db.upsert("tasks", { id: task.id, ...v }));
   return (
     <div className="task-memo" onClick={(e) => e.stopPropagation()}>
-      <input className="bare task-title-edit" value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} placeholder="할 일" />
-      <AutoText value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="메모를 적어 두세요" minRows={2} autoFocus />
+      <input className="bare task-title-edit" value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} placeholder="할 일" autoFocus={focusTitle} />
+      <AutoText value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="메모를 적어 두세요" minRows={2} autoFocus={!focusTitle} />
       <div className="row">
         <label className="row small muted">
           마감일
@@ -45,6 +45,8 @@ export default function Tasks() {
   const [due, setDue] = useState("");
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState<number | null>(null);
+  // A task added with no title opens with its title field focused.
+  const [freshId, setFreshId] = useState<number | null>(null);
   const search = useDebounced(q);
   const filters = tab === "open" ? [{ col: "done_at", op: "null" as const }] : tab === "done" ? [{ col: "done_at", op: "notnull" as const }] : [];
   const { rows } = useRows("tasks", { filters, search, order: [["done_at", "asc"], ["due_at", "asc"], ["id", "desc"]], limit: 2000 });
@@ -64,17 +66,30 @@ export default function Tasks() {
   const lastAdd = useRef(0);
   const titleRef = useRef(title);
   titleRef.current = title;
-  const add = async (raw?: string) => {
+  // `blank`: the 추가 button with nothing typed makes an untitled task and
+  // opens it, so the button always does something visible.
+  const add = async (raw?: string, blank = false) => {
     const t = (raw ?? titleRef.current).trim();
-    if (!t || Date.now() - lastAdd.current < 400) return;
+    if ((!t && !blank) || Date.now() - lastAdd.current < 400) return;
     lastAdd.current = Date.now();
     setTitle("");
     titleRef.current = "";
-    await db.upsert("tasks", { title: t, due_at: due || null });
+    try {
+      const row = await db.upsert("tasks", { title: t, due_at: due || null });
+      // Make sure the new task is on screen: not filtered out by the 완료 tab or a search.
+      if (tab === "done") setTab("open");
+      if (q) setQ("");
+      if (!t) {
+        setOpenId(row.id);
+        setFreshId(row.id);
+      }
+    } catch (e) {
+      toast(`추가하지 못했습니다: ${e}`, "error");
+    }
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    add();
+    add(undefined, true);
   };
 
   return (
@@ -131,7 +146,7 @@ export default function Tasks() {
                   <span className="task-date" data-label="생성">{created(t.created_at)}</span>
                   <span className="task-date" data-label="마감"><Due due={t.due_at} done={done} /></span>
                 </div>
-                {opened && <TaskMemo key={t.id} task={t} />}
+                {opened && <TaskMemo key={t.id} task={t} focusTitle={freshId === t.id} />}
               </div>
             );
           })}
