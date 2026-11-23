@@ -15,14 +15,20 @@ val tauriProperties = Properties().apply {
 }
 
 // self-manager: release key (see scripts/android-setup.mjs)
+val releaseKeyFile = rootProject.file("keystore.properties")
 val releaseKey = Properties().apply {
-    val f = rootProject.file("keystore.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
+    if (releaseKeyFile.exists()) releaseKeyFile.inputStream().use { load(it) }
+}
+if (releaseKeyFile.exists()) {
+    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword").filter { releaseKey.getProperty(it).isNullOrBlank() }
+    if (missing.isNotEmpty()) throw GradleException("keystore.properties is missing: ${missing.joinToString()}")
+    val store = rootProject.file(releaseKey.getProperty("storeFile"))
+    if (!store.exists()) throw GradleException("keystore.properties: storeFile not found: ${store.path}")
 }
 
 android {
     signingConfigs {
-        if (releaseKey.getProperty("storeFile") != null) {
+        if (releaseKeyFile.exists()) {
             create("release") {
                 storeFile = rootProject.file(releaseKey.getProperty("storeFile"))
                 storePassword = releaseKey.getProperty("storePassword")
@@ -56,7 +62,8 @@ android {
         }
         getByName("release") {
             // self-manager: release signing (see scripts/android-setup.mjs)
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug").also { project.logger.warn("self-manager: no keystore.properties - release APK is signed with this PC's debug key") }
             optimization {
                enable = true
             }

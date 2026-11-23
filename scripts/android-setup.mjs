@@ -109,17 +109,15 @@ if (!m2.includes("android:allowBackup")) {
 // (see docs/google-setup.md).
 let g2 = fs.readFileSync(gradlePath, "utf8");
 const SIGN_MARK = "// self-manager: release signing";
-const signLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")`;
+const prevLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")`;
+const signLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.findByName("release")\n                ?: signingConfigs.getByName("debug").also { project.logger.warn("self-manager: no keystore.properties - release APK is signed with this PC's debug key") }`;
 const oldLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.getByName("debug")`;
 g2 = g2.replace(/\r\n/g, "\n");
-if (g2.includes(oldLine)) g2 = g2.replace(oldLine, signLine);
+if (g2.includes(prevLine) && !g2.includes(signLine)) g2 = g2.replace(prevLine, signLine);
+else if (g2.includes(oldLine)) g2 = g2.replace(oldLine, signLine);
 else if (!g2.includes(SIGN_MARK)) g2 = g2.replace(/getByName\("release"\)\s*\{/, (m) => `${m}\n            ${signLine}`);
 const KEY_MARK = "// self-manager: release key";
-if (!g2.includes(KEY_MARK)) {
-  g2 = g2.replace(
-    /\nandroid\s*\{/,
-    `
-${KEY_MARK} (see scripts/android-setup.mjs)
+const oldKeyBlock = `${KEY_MARK} (see scripts/android-setup.mjs)
 val releaseKey = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
@@ -135,9 +133,34 @@ android {
                 keyPassword = releaseKey.getProperty("keyPassword")
             }
         }
-    }`,
-  );
+    }`;
+// A keystore.properties that is there but incomplete (or points to a missing
+// key) fails the build: it must never quietly fall back to the debug key.
+const keyBlock = `${KEY_MARK} (see scripts/android-setup.mjs)
+val releaseKeyFile = rootProject.file("keystore.properties")
+val releaseKey = Properties().apply {
+    if (releaseKeyFile.exists()) releaseKeyFile.inputStream().use { load(it) }
 }
+if (releaseKeyFile.exists()) {
+    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword").filter { releaseKey.getProperty(it).isNullOrBlank() }
+    if (missing.isNotEmpty()) throw GradleException("keystore.properties is missing: \${missing.joinToString()}")
+    val store = rootProject.file(releaseKey.getProperty("storeFile"))
+    if (!store.exists()) throw GradleException("keystore.properties: storeFile not found: \${store.path}")
+}
+
+android {
+    signingConfigs {
+        if (releaseKeyFile.exists()) {
+            create("release") {
+                storeFile = rootProject.file(releaseKey.getProperty("storeFile"))
+                storePassword = releaseKey.getProperty("storePassword")
+                keyAlias = releaseKey.getProperty("keyAlias")
+                keyPassword = releaseKey.getProperty("keyPassword")
+            }
+        }
+    }`;
+if (g2.includes(oldKeyBlock)) g2 = g2.replace(oldKeyBlock, keyBlock);
+else if (!g2.includes(KEY_MARK)) g2 = g2.replace(/\nandroid\s*\{/, `\n${keyBlock}`);
 fs.writeFileSync(gradlePath, g2);
 
 console.log("Android 설정을 적용했습니다:", path.relative(root, javaDir));
