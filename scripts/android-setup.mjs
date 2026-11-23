@@ -99,15 +99,45 @@ if (!m2.includes("android:allowBackup")) {
   fs.writeFileSync(manifestPath, m2);
 }
 
-// 6. Release APKs are signed with this PC's debug key: the Android OAuth client
-// in Google Cloud is registered with that key's SHA-1, so Google login keeps
-// working and a release installs over the debug build. Switching to a real
-// release key means registering its SHA-1 first.
+// 6. Release signing. With src-tauri/gen/android/keystore.properties
+// (storeFile, storePassword, keyAlias, keyPassword; git-ignored) releases are
+// signed with that release key. Without it they fall back to this PC's debug
+// key, which only this machine has: losing it means no more updates that
+// install over the old app. Google login on Android only works with a key
+// whose SHA-1 is registered for an Android OAuth client in Google Cloud, so
+// register the release key's SHA-1 before the first release signed with it
+// (see docs/google-setup.md).
 let g2 = fs.readFileSync(gradlePath, "utf8");
 const SIGN_MARK = "// self-manager: release signing";
-if (!g2.includes(SIGN_MARK)) {
-  g2 = g2.replace(/getByName\("release"\)\s*\{/, (s) => `${s}\n            ${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.getByName("debug")`);
-  fs.writeFileSync(gradlePath, g2);
+const signLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")`;
+const oldLine = `${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.getByName("debug")`;
+g2 = g2.replace(/\r\n/g, "\n");
+if (g2.includes(oldLine)) g2 = g2.replace(oldLine, signLine);
+else if (!g2.includes(SIGN_MARK)) g2 = g2.replace(/getByName\("release"\)\s*\{/, (m) => `${m}\n            ${signLine}`);
+const KEY_MARK = "// self-manager: release key";
+if (!g2.includes(KEY_MARK)) {
+  g2 = g2.replace(
+    /\nandroid\s*\{/,
+    `
+${KEY_MARK} (see scripts/android-setup.mjs)
+val releaseKey = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
+
+android {
+    signingConfigs {
+        if (releaseKey.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseKey.getProperty("storeFile"))
+                storePassword = releaseKey.getProperty("storePassword")
+                keyAlias = releaseKey.getProperty("keyAlias")
+                keyPassword = releaseKey.getProperty("keyPassword")
+            }
+        }
+    }`,
+  );
+}
+fs.writeFileSync(gradlePath, g2);
 
 console.log("Android 설정을 적용했습니다:", path.relative(root, javaDir));

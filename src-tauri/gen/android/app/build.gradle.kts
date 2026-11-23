@@ -14,7 +14,23 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// self-manager: release key (see scripts/android-setup.mjs)
+val releaseKey = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 android {
+    signingConfigs {
+        if (releaseKey.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseKey.getProperty("storeFile"))
+                storePassword = releaseKey.getProperty("storePassword")
+                keyAlias = releaseKey.getProperty("keyAlias")
+                keyPassword = releaseKey.getProperty("keyPassword")
+            }
+        }
+    }
     compileSdk = 37
     namespace = "com.selfmanager.app"
     defaultConfig {
@@ -40,7 +56,7 @@ android {
         }
         getByName("release") {
             // self-manager: release signing (see scripts/android-setup.mjs)
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             optimization {
                enable = true
             }

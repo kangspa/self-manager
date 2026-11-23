@@ -63,6 +63,23 @@ PC와 폰이 같은 백업 파일을 보려면 **두 클라이언트가 같은 �
    - 릴리스 빌드: 본인 릴리스 키스토어의 SHA-1
 4. 앱에서는 입력할 것이 없습니다. **설정 › 백업·동기화 › 구글 로그인**을 누르면 Google Play 서비스가 계정 선택·동의 화면을 띄웁니다.
 
+### 릴리스 APK 서명 키
+
+- **지금(v0.1.0)**: 릴리스 APK도 이 PC의 디버그 키(`%USERPROFILE%\.android\debug.keystore`)로 서명합니다. 위 3의 SHA-1이 그 키라 로그인이 되고, 개발용으로 설치한 앱 위에 덮어 설치됩니다.
+- **주의**: 이 키는 이 PC에만 있습니다. 잃어버리면 기존 앱 위에 설치되는 업데이트를 더 만들 수 없으니 **`debug.keystore`를 따로 백업**해 두세요.
+- **정식 릴리스 키로 바꾸기** (설정은 `scripts/android-setup.mjs` 6단계에 이미 있음):
+  1. 키 만들기: `keytool -genkeypair -v -keystore selfmanager-release.jks -alias selfmanager -keyalg RSA -keysize 4096 -validity 10000`
+  2. `src-tauri/gen/android/keystore.properties`(git 제외)에 적기:
+     ```
+     storeFile=../../../selfmanager-release.jks
+     storePassword=...
+     keyAlias=selfmanager
+     keyPassword=...
+     ```
+     `storeFile`은 `src-tauri/gen/android` 기준 경로입니다(위 예시는 저장소 루트의 키 파일). 키 파일(`*.jks`)도 git에서 제외되어 있습니다.
+  3. 새 키의 SHA-1로 **Android OAuth 클라이언트를 하나 더** 만듭니다(같은 프로젝트·같은 패키지 이름). 이전 클라이언트는 개발용으로 남겨 둬도 됩니다.
+  4. 서명 키가 바뀌면 기존 앱 위에 덮어 설치되지 않으므로, 폰에서 앱을 지우고 새로 설치합니다(그 전에 드라이브에 백업).
+
 ## 동작 요약
 
 | 기능 | PC | Android |

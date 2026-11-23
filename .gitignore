@@ -11,3 +11,8 @@ release/
 site-dist/
 .firebase/
 firebase-debug.log
+
+# Android release signing key (see scripts/android-setup.mjs)
+*.jks
+*.keystore
+src-tauri/gen/android/keystore.properties
