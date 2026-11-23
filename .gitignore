@@ -6,3 +6,8 @@ src-tauri/gen/schemas/
 src-tauri/target-test/
 .env
 release/
+
+# Firebase Hosting (site/)
+site-dist/
+.firebase/
+firebase-debug.log

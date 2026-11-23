@@ -9,7 +9,9 @@
     "build:pc": "node scripts/build-pc.mjs",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "site:build": "node scripts/build-site.mjs",
+    "site:deploy": "firebase deploy --only hosting"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

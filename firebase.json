@@ -1,0 +1,13 @@
+{
+  "hosting": {
+    "public": "site-dist",
+    "predeploy": [
+      "node scripts/build-site.mjs"
+    ],
+    "ignore": [
+      "**/.*"
+    ],
+    "cleanUrls": true,
+    "trailingSlash": false
+  }
+}
