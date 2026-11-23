@@ -72,4 +72,42 @@ for (const [triple, abi] of Object.entries(abis)) {
   fs.copyFileSync(src, path.join(dst, "libc++_shared.so"));
 }
 
+// 5. No Android system backup: the app has its own Drive backup, and the data
+// folder holds sign-in tokens that must not be restored onto another phone.
+// allowBackup=false stops cloud backup; from Android 12 device-to-device
+// transfer needs the extraction rules as well.
+const xmlDir = path.join(gen, "src", "main", "res", "xml");
+fs.mkdirSync(xmlDir, { recursive: true });
+const domains = ["root", "file", "database", "sharedpref", "external"].map((d) => `        <exclude domain="${d}" path="." />`).join("\n");
+fs.writeFileSync(
+  path.join(xmlDir, "data_extraction_rules.xml"),
+  `<?xml version="1.0" encoding="utf-8"?>
+<!-- self-manager: nothing is backed up or moved by Android itself (see android-setup.mjs). -->
+<data-extraction-rules>
+    <cloud-backup>
+${domains}
+    </cloud-backup>
+    <device-transfer>
+${domains}
+    </device-transfer>
+</data-extraction-rules>
+`,
+);
+let m2 = fs.readFileSync(manifestPath, "utf8");
+if (!m2.includes("android:allowBackup")) {
+  m2 = m2.replace(/<application\b/, `<application\n        android:allowBackup="false"\n        android:dataExtractionRules="@xml/data_extraction_rules"`);
+  fs.writeFileSync(manifestPath, m2);
+}
+
+// 6. Release APKs are signed with this PC's debug key: the Android OAuth client
+// in Google Cloud is registered with that key's SHA-1, so Google login keeps
+// working and a release installs over the debug build. Switching to a real
+// release key means registering its SHA-1 first.
+let g2 = fs.readFileSync(gradlePath, "utf8");
+const SIGN_MARK = "// self-manager: release signing";
+if (!g2.includes(SIGN_MARK)) {
+  g2 = g2.replace(/getByName\("release"\)\s*\{/, (s) => `${s}\n            ${SIGN_MARK} (see scripts/android-setup.mjs)\n            signingConfig = signingConfigs.getByName("debug")`);
+  fs.writeFileSync(gradlePath, g2);
+}
+
 console.log("Android 설정을 적용했습니다:", path.relative(root, javaDir));

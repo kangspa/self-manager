@@ -39,6 +39,8 @@ android {
             }
         }
         getByName("release") {
+            // self-manager: release signing (see scripts/android-setup.mjs)
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
                enable = true
             }
