@@ -26,7 +26,7 @@ use crate::AppState;
 pub const DEFAULT_LIMIT_MB: f64 = 10.0;
 
 pub fn files_dir(app: &AppHandle) -> PathBuf {
-    app.state::<AppState>().data_dir.join("files")
+    app.state::<AppState>().profile_dir().join("files")
 }
 
 fn uploads_dir(app: &AppHandle) -> PathBuf {
@@ -59,6 +59,13 @@ pub fn effective_sync(mode: &str, size: u64, limit: u64) -> bool {
 
 /// In-progress uploads from the webview (`<input type=file>` works the same on
 /// PC and Android, so files arrive as chunks instead of paths).
+impl Uploads {
+    /// A file being sent in chunks (it lands in the active profile's store).
+    pub fn busy(&self) -> bool {
+        self.open.lock().map(|m| !m.is_empty()).unwrap_or(true)
+    }
+}
+
 #[derive(Default)]
 pub struct Uploads {
     open: Mutex<HashMap<String, PendingUpload>>,
@@ -151,6 +158,21 @@ fn hash_file(path: &Path) -> Result<(String, u64)> {
     Ok((format!("{:x}", h.finalize()), size))
 }
 
+/// An attachment is only ever added to a record that exists - checked in the
+/// same transaction as the insert. The live DB may have been replaced (a load
+/// or merge) or the record deleted since the upload or recording began; the
+/// stored file is then simply left for gc_local.
+pub const NO_OWNER: &str = "첨부할 기록이 이미 지워져 첨부하지 않았습니다";
+
+fn ensure_owner(tx: &rusqlite::Transaction, owner_table: &str, owner_id: i64) -> Result<()> {
+    let t = crate::schema::table(owner_table).filter(|t| t.name != "attachments").ok_or_else(|| Error::msg(format!("unknown table {owner_table}")))?;
+    let found = tx.query_row(&format!("SELECT 1 FROM {} WHERE id=?1", t.name), [owner_id], |_| Ok(())).optional()?.is_some();
+    if !found {
+        return Err(Error::msg(NO_OWNER));
+    }
+    Ok(())
+}
+
 fn insert_row(app: &AppHandle, owner_table: &str, owner_id: i64, role: Option<&str>, name: &str, mime: Option<&str>, size: u64, sha: &str) -> Result<Value> {
     let state = app.state::<AppState>();
     let mut row = serde_json::Map::new();
@@ -162,7 +184,15 @@ fn insert_row(app: &AppHandle, owner_table: &str, owner_id: i64, role: Option<&s
     row.insert("size".into(), json!(size));
     row.insert("sha256".into(), json!(sha));
     row.insert("sync_mode".into(), json!("auto"));
-    state.db.write(|tx| db::upsert(tx, "attachments", &row))
+    state.db.write(|tx| {
+        ensure_owner(tx, owner_table, owner_id)?;
+        // A file with a role (a meeting's recording) replaces the previous one -
+        // in this same transaction, so the old one is never dropped without the new.
+        if let Some(r) = role {
+            tx.execute("DELETE FROM attachments WHERE owner_table=?1 AND owner_id=?2 AND role=?3", params![owner_table, owner_id, r])?;
+        }
+        db::upsert(tx, "attachments", &row)
+    })
 }
 
 /// Takes ownership of a finished file (meeting recording / imported audio) and
@@ -173,10 +203,6 @@ pub fn adopt_file(app: &AppHandle, src: &Path, owner_table: &str, owner_id: i64,
         let st = app.state::<AppState>();
     let _g = st.uploads.store_lock.lock().unwrap();
         store(app, src, &sha)?;
-        app.state::<AppState>().db.write(|tx| {
-            tx.execute("DELETE FROM attachments WHERE owner_table=?1 AND owner_id=?2 AND role=?3", params![owner_table, owner_id, role])?;
-            Ok(())
-        })?;
         insert_row(app, owner_table, owner_id, Some(role), name, Some(mime), size, &sha)?
     };
     gc_local(app)?;
@@ -196,7 +222,7 @@ pub fn role_file(app: &AppHandle, owner_table: &str, owner_id: i64, role: &str) 
 /// Drive's file names (hashes) as of the last file sync, cached per device so
 /// views can show "동기화됨 / 업로드 대기" without a network call.
 pub fn remote_cache_path(app: &AppHandle) -> PathBuf {
-    app.state::<AppState>().data_dir.join("remote_files.json")
+    app.state::<AppState>().profile_dir().join("remote_files.json")
 }
 
 pub fn remote_cache(app: &AppHandle) -> HashSet<String> {
@@ -276,6 +302,11 @@ pub fn set_limit_mb(app: &AppHandle, mb: f64) -> Result<()> {
 /// Deletes content-store files no attachment row references (any more).
 pub fn gc_local(app: &AppHandle) -> Result<usize> {
     let st = app.state::<AppState>();
+    // The rows and the files must be the same profile's, or this deletes files
+    // another profile still uses: skip it while a switch is under way.
+    let Ok(_profile) = crate::hold(&st, None) else {
+        return Ok(0);
+    };
     let _g = st.uploads.store_lock.lock().unwrap();
     let used: HashSet<String> = app.state::<AppState>().db.with(|c| {
         let mut s = c.prepare("SELECT DISTINCT sha256 FROM attachments")?;
@@ -325,6 +356,8 @@ fn wanted_files(app: &AppHandle) -> Result<HashMap<String, (u64, String)>> {
 pub async fn sync_files(app: &AppHandle) -> Result<Value> {
     use tauri::Emitter;
     let state = app.state::<AppState>();
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
     let _pass = state.file_sync.pass.lock().await;
     // Everything this pass learns about Drive belongs to the account it started
     // with; after a switch it neither prunes nor records anything.
@@ -413,6 +446,22 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::effective_sync;
+
+    /// An attachment can only join a record that is there (checked in the insert's transaction).
+    #[test]
+    fn attachments_only_join_existing_records() {
+        let dir = std::env::temp_dir().join(format!("sm-att-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Db::open(dir.join("live.db")).unwrap();
+        let memo = db.write(|tx| crate::db::upsert(tx, "memos", serde_json::json!({ "title": "m" }).as_object().unwrap())).unwrap();
+        let id = memo["id"].as_i64().unwrap();
+        db.write(|tx| super::ensure_owner(tx, "memos", id)).unwrap();
+        let gone = db.write(|tx| super::ensure_owner(tx, "memos", id + 1)).unwrap_err().to_string();
+        assert_eq!(gone, super::NO_OWNER);
+        assert!(db.write(|tx| super::ensure_owner(tx, "no_such_table", id)).is_err());
+        assert!(db.write(|tx| super::ensure_owner(tx, "attachments", id)).is_err(), "attachments don't own attachments");
+    }
 
     #[test]
     fn per_file_override_beats_size_limit() {

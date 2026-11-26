@@ -80,6 +80,8 @@ pub struct SyncReport {
 
 pub async fn sync(app: &AppHandle) -> Result<SyncReport> {
     let state = app.state::<AppState>();
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
     let mut rep = SyncReport::default();
 
     // 1. Deletions made locally.

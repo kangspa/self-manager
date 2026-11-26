@@ -62,6 +62,15 @@ export function useOptions(setKey: string) {
   return rows;
 }
 
+// Every mounted autosave, so pending edits can be written before the data
+// underneath goes away (a profile switch).
+const flushers = new Set<() => Promise<unknown> | void>();
+
+/** Writes every pending autosave now and waits until they are stored. */
+export async function flushAllSaves() {
+  await Promise.all([...flushers].map((f) => Promise.resolve(f()).catch(() => undefined)));
+}
+
 const isFields = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
@@ -132,7 +141,7 @@ export function useAutosave<T>(value: T, save: (v: T) => Promise<unknown> | void
     // still build on it.
     base.current = after;
     outside.current = after;
-    Promise.resolve(saveRef.current(after)).catch((e) => toast(String(e), "error"));
+    return Promise.resolve(saveRef.current(after)).catch((e) => toast(String(e), "error"));
   }, []);
 
   const update = useCallback(
@@ -149,7 +158,13 @@ export function useAutosave<T>(value: T, save: (v: T) => Promise<unknown> | void
     [delay, flush],
   );
 
-  useEffect(() => () => flush(), [flush]);
+  useEffect(() => {
+    flushers.add(flush);
+    return () => {
+      flushers.delete(flush);
+      flush();
+    };
+  }, [flush]);
   return [draft, update, flush] as const;
 }
 

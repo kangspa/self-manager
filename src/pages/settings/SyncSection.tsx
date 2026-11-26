@@ -5,6 +5,8 @@ import { fmtTs } from "../../lib/date";
 import { confirmDialog, run, toast } from "../../components/ui";
 import { describe } from "../../components/SyncConflict";
 import FileSyncCard from "./FileSyncCard";
+import ProfilesCard from "./ProfilesCard";
+import { LOGIN_NEW_PROFILE } from "../../lib/profiles";
 
 function Same({ a, b }: { a?: number | null; b?: number | null }) {
   if (!a || !b) return null;
@@ -69,6 +71,21 @@ export default function SyncSection() {
     setBusy(null);
     load(key.startsWith("drive") || key === "login");
   };
+
+  // A profile just added opens here: start its Google login right away (once).
+  const loaded = !!st && !!dev;
+  useEffect(() => {
+    if (!loaded) return;
+    let pending = false;
+    try {
+      pending = sessionStorage.getItem(LOGIN_NEW_PROFILE) === "1";
+      sessionStorage.removeItem(LOGIN_NEW_PROFILE);
+    } catch {
+      /* no storage: the login button is there */
+    }
+    if (pending && !st?.logged_in) act("login", () => api.googleLogin(), "구글 로그인 완료");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
 
   if (!st || !dev) return <div className="empty">불러오는 중…</div>;
   const android = dev.platform === "android";
@@ -146,6 +163,8 @@ export default function SyncSection() {
           창을 닫을 때·백그라운드로 갈 때는 묻지 않고 건너뛰며, 다음에 켤 때 묻습니다.
         </div>
       </div>
+
+      <ProfilesCard />
 
       <div className="card section" id="google">
         <div className="section-title">구글 연동 {st.email && (st.logged_in ? <span className="badge ok">{st.email}</span> : <span className="badge warn">{st.email} · 다시 로그인 필요</span>)}</div>

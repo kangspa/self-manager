@@ -29,20 +29,37 @@ export class MeetingRecorder {
   level = 0;
   paused = false;
 
+  // Handed out when the recording opens; every chunk carries it (see stt::Recorder).
+  private token = "";
   constructor(private meetingId: number, private onTick: () => void) {}
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-    // Asking for 16 kHz makes the browser resample for us (what whisper expects).
-    this.ctx = new AudioContext({ sampleRate: 16000 });
-    const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
-    await this.ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
-    const src = this.ctx.createMediaStreamSource(this.stream);
-    this.node = new AudioWorkletNode(this.ctx, "sm-tap");
-    this.node.port.onmessage = (e) => this.push(e.data as Float32Array);
-    src.connect(this.node);
-    await api.recStart(this.meetingId);
+    // Open the recording (and get its token) before any audio is taken: a
+    // chunk sent earlier would carry no token and be refused, losing audio.
+    try {
+      this.token = await api.recStart(this.meetingId);
+    } catch (e) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      throw e;
+    }
+    try {
+      // Asking for 16 kHz makes the browser resample for us (what whisper expects).
+      this.ctx = new AudioContext({ sampleRate: 16000 });
+      const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+      await this.ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      const src = this.ctx.createMediaStreamSource(this.stream);
+      this.node = new AudioWorkletNode(this.ctx, "sm-tap");
+      this.node.port.onmessage = (e) => this.push(e.data as Float32Array);
+      src.connect(this.node);
+    } catch (e) {
+      // Close the recording opened above, or it would stay open (and block switching accounts).
+      this.stream.getTracks().forEach((t) => t.stop());
+      await this.ctx?.close().catch(() => undefined);
+      await api.recStop(this.meetingId).catch(() => undefined);
+      throw e;
+    }
     try {
       // Keeps the phone screen on; Android may suspend the webview otherwise.
       this.wake = await (navigator as any).wakeLock?.request("screen");
@@ -73,7 +90,7 @@ export class MeetingRecorder {
     this.bufLen = 0;
     const bytes = new Uint8Array(pcm.buffer);
     // Keep chunks in order.
-    this.sending = this.sending.then(() => api.recAppend(this.meetingId, bytes).then(() => undefined)).catch((e) => console.error(e));
+    this.sending = this.sending.then(() => api.recAppend(this.meetingId, this.token, bytes).then(() => undefined)).catch((e) => console.error(e));
     this.onTick();
   }
 

@@ -1,6 +1,7 @@
 package com.selfmanager.app
 
 import android.accounts.Account
+import android.accounts.AccountManager
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
@@ -28,6 +29,8 @@ class AuthArgs {
     var scopes: Array<String> = arrayOf()
     /** The signed-in account's address: a silent request asks for exactly that account. */
     var account: String? = null
+    /** Show the phone's account chooser first (login: each profile holds its own account). */
+    var pickAccount: Boolean = false
 }
 
 @InvokeArg
@@ -47,9 +50,30 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun googleAuthorize(invoke: Invoke) {
         val args = invoke.parseArgs(AuthArgs::class.java)
+        if (args.pickAccount) {
+            // Without an account Google silently reuses the last one, so another
+            // account could never be added. The system chooser needs no permission.
+            val intent = AccountManager.newChooseAccountIntent(null, null, arrayOf("com.google"), null, null, null, null)
+            startActivityForResult(invoke, intent, "onAccountPicked")
+            return
+        }
+        authorize(invoke, args, args.account)
+    }
+
+    @ActivityCallback
+    fun onAccountPicked(invoke: Invoke, result: ActivityResult) {
+        val name = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        if (result.resultCode != Activity.RESULT_OK || name.isNullOrBlank()) {
+            invoke.reject("구글 로그인이 취소됐습니다")
+            return
+        }
+        authorize(invoke, invoke.parseArgs(AuthArgs::class.java), name)
+    }
+
+    private fun authorize(invoke: Invoke, args: AuthArgs, account: String?) {
         val scopes = args.scopes.filter { it.startsWith("https://") }.map { Scope(it) }
         val builder = AuthorizationRequest.builder().setRequestedScopes(scopes)
-        args.account?.takeIf { it.isNotBlank() }?.let { builder.setAccount(Account(it, "com.google")) }
+        account?.takeIf { it.isNotBlank() }?.let { builder.setAccount(Account(it, "com.google")) }
         val request = builder.build()
         Identity.getAuthorizationClient(activity).authorize(request)
             .addOnSuccessListener { result ->

@@ -417,3 +417,18 @@ a.btn { text-decoration: none; color: inherit; }
 /* A settings card that cannot be used yet (e.g. auto backup before Google login). */
 .card.is-disabled > :not(.section-title) { opacity: 0.5; }
 .card.is-disabled input:disabled, .card.is-disabled label:has(input:disabled) { cursor: not-allowed; }
+
+/* Account (profile) switcher at the top of the sidebar. */
+.profile { position: relative; margin: 0 2px 12px; }
+.profile-current, .profile-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.profile-current:hover, .profile-item:hover { background: var(--bg-hover); }
+.profile-current:disabled, .profile-item:disabled { opacity: 0.6; cursor: default; }
+.profile-avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+.profile-avatar.sm { width: 22px; height: 22px; font-size: 12px; background: var(--text-soft); }
+.profile-name { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 13px; font-weight: 600; line-height: 1.3; }
+.profile-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-sub { font-size: 11px; font-weight: 400; color: var(--text-soft); }
+.profile-caret { color: var(--text-soft); font-size: 11px; }
+.profile-menu { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; gap: 4px; padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
+.profile-item { border-color: transparent; }
+.profile-item.add .profile-name { font-weight: 500; color: var(--text-soft); }

@@ -48,6 +48,8 @@ pub fn logged_in(app: &AppHandle) -> bool {
 
 pub async fn status(app: &AppHandle, with_drive: bool) -> Result<SyncStatus> {
     let state = app.state::<AppState>();
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
     let auto = state.db.last_modified()?;
     let started = state.device.get().google.session;
     let (mut drive, mut drive_error) = if with_drive && logged_in(app) {
@@ -69,7 +71,7 @@ pub async fn status(app: &AppHandle, with_drive: bool) -> Result<SyncStatus> {
     }
     Ok(SyncStatus {
         auto_saved_at: auto,
-        manual_saved_at: cfg.manual_saved_at.filter(|_| state.manual_path.exists()),
+        manual_saved_at: cfg.manual_saved_at.filter(|_| state.manual_path().exists()),
         manual_local_modified: cfg.manual_local_modified,
         drive,
         drive_error,
@@ -87,9 +89,12 @@ pub async fn status(app: &AppHandle, with_drive: bool) -> Result<SyncStatus> {
 
 pub fn manual_save(app: &AppHandle) -> Result<i64> {
     let state = app.state::<AppState>();
-    let tmp = state.manual_path.with_extension("db.tmp");
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
+    let manual = state.manual_path();
+    let tmp = manual.with_extension("db.tmp");
     state.db.snapshot_to(&tmp)?;
-    std::fs::rename(&tmp, &state.manual_path)?;
+    std::fs::rename(&tmp, &manual)?;
     let lm = state.db.last_modified()?;
     let now = now_ms();
     state.device.update(|d| {
@@ -101,17 +106,20 @@ pub fn manual_save(app: &AppHandle) -> Result<i64> {
 
 pub fn load_manual(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
-    if !state.manual_path.exists() {
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
+    if !state.manual_path().exists() {
         return Err(Error::msg("수동 저장된 DB가 없습니다"));
     }
-    validate_db_file(&state.manual_path)?;
-    state.db.replace_with(&state.manual_path)?;
+    let manual = state.manual_path();
+    validate_db_file(&manual)?;
+    crate::without_record_work(app, || state.db.replace_with(&manual))?;
     let _ = app.emit("db-replaced", "manual");
     Ok(())
 }
 
 fn base_path(app: &AppHandle) -> std::path::PathBuf {
-    app.state::<AppState>().data_dir.join("base.db")
+    app.state::<AppState>().profile_dir().join("base.db")
 }
 
 /// Uploads the live DB as-is and records it as the new merge base.
@@ -173,13 +181,10 @@ fn adopt(app: &AppHandle, file: &std::path::Path, why: &str, expected_lm: Option
     // The agreed state is the file as received. Opening it may still repair it
     // (and bump the live stamp); that repair then counts as a local change.
     let source_lm = validate_db_file(file)?;
-    let swapped = match expected_lm {
-        Some(lm) => state.db.replace_if_unchanged(file, lm)?,
-        None => {
-            state.db.replace_with(file)?;
-            true
-        }
-    };
+    let swapped = crate::without_record_work(app, || match expected_lm {
+        Some(lm) => state.db.replace_if_unchanged(file, lm),
+        None => state.db.replace_with(file).map(|_| true),
+    })?;
     if !swapped {
         return Ok(false);
     }
@@ -205,6 +210,8 @@ fn adopt(app: &AppHandle, file: &std::path::Path, why: &str, expected_lm: Option
 /// "드라이브 백업 불러오기" button: explicit overwrite of the live DB.
 pub async fn drive_load(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
     let _one_at_a_time = state.sync_lock.lock().await;
     let f = google::find_backup(app).await?.ok_or_else(|| Error::msg("드라이브에 백업이 없습니다"))?;
     let tmp = download_remote(app, &f).await?;
@@ -247,6 +254,8 @@ pub async fn reconcile(app: &AppHandle, mode: Mode, interactive: bool, prefer: O
     // Overlapping syncs would share upload/merge temp files; run them in turn
     // (the second one then simply sees the first one's result).
     let state = app.state::<AppState>();
+    // Bound to the active profile: no switch while this runs (see profiles.rs).
+    let _profile = crate::hold(&state, None)?;
     let _one_at_a_time = state.sync_lock.lock().await;
     // A pass returns None when the user edited during it; the next pass then
     // sees the edit and takes the merge path instead of overwriting it.

@@ -1,4 +1,22 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as coreInvoke, InvokeArgs, InvokeOptions } from "@tauri-apps/api/core";
+
+// The profile this screen shows, learned once when the screen loads and sent
+// with every call; the backend requires it and refuses calls of a screen whose
+// profile was switched away (see crate::hold). Fixed for the life of the
+// screen: nothing later may make an old screen look current.
+const screenProfile: Promise<string> = coreInvoke<{ active: string }>("profile_list").then((l) => l.active);
+const SCREEN_STALE = "다른 계정으로 바뀌어 이 화면의 요청은 처리하지 않았습니다.";
+
+async function invoke<T>(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {
+  const plain = args === undefined || (typeof args === "object" && !ArrayBuffer.isView(args) && !(args instanceof ArrayBuffer) && !Array.isArray(args));
+  // Binary chunks (recording, upload) go as they are; those commands take no profile.
+  const withScreen = plain ? { ...(args as Record<string, unknown> | undefined), profileToken: await screenProfile } : args;
+  return coreInvoke<T>(cmd, withScreen, options).catch((e) => {
+    // This screen belongs to the previous account: start over on the current one.
+    if (String(e).includes(SCREEN_STALE)) location.reload();
+    throw e;
+  });
+}
 
 export type Row = Record<string, any> & { id: number };
 
@@ -55,6 +73,10 @@ export const db = {
     return r;
   },
 };
+
+/** One per Google account; each has its own data (see src-tauri/src/profiles.rs). */
+export type ProfileInfo = { id: string; email: string | null; logged_in: boolean; active: boolean; default: boolean };
+export type ProfileList = { active: string; profiles: ProfileInfo[] };
 
 export type SyncStatus = {
   auto_saved_at: number;
@@ -139,6 +161,10 @@ export const api = {
   setAuto: (autoBackup: boolean, autoLoad: boolean) => invoke("sync_set_auto", { autoBackup, autoLoad }),
   googleLogin: () => invoke<string>("google_login"),
   googleLogout: () => invoke("google_logout"),
+  profileList: () => invoke<ProfileList>("profile_list"),
+  profileSwitch: (id: string) => invoke("profile_switch", { id }),
+  profileAdd: () => invoke<string>("profile_add"),
+  profileRemove: (id: string) => invoke("profile_remove", { id }),
   gcalSync: async () => {
     const r = await invoke<{ pushed: number; pulled: number; deleted: number }>("gcal_sync");
     notifyChange("events");
@@ -151,8 +177,9 @@ export const api = {
   deviceSettings: () => invoke<DeviceSettings>("device_settings"),
   setLlm: (llm: LlmConfig) => invoke("device_set_llm", { llm }),
   setStt: (stt: SttConfig) => invoke("device_set_stt", { stt }),
-  recStart: (id: number) => invoke("meeting_rec_start", { id }),
-  recAppend: (id: number, pcm: Uint8Array) => invoke("meeting_rec_append", binaryBody(pcm), { headers: { "x-meeting-id": String(id) } }),
+  /** Returns the recording's token, which every chunk of it must carry. */
+  recStart: (id: number) => invoke<string>("meeting_rec_start", { id }),
+  recAppend: (id: number, token: string, pcm: Uint8Array) => invoke("meeting_rec_append", binaryBody(pcm), { headers: { "x-meeting-id": String(id), "x-rec-token": token } }),
   recStop: (id: number) => invoke<Row>("meeting_rec_stop", { id }),
   meetingImport: (id: number, path: string) => invoke<Row>("meeting_import", { id, path }),
   meetingTranscribe: (id: number) => invoke<Row>("meeting_transcribe", { id }),

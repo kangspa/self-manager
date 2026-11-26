@@ -90,15 +90,43 @@ pub struct DeviceConfig {
     pub gcal_last_sync: Option<i64>,
 }
 
+/// The active profile's settings file (device.json in the profile folder).
+/// Each profile keeps its own Google session, Drive state and sync points;
+/// the AI model settings belong to the device and follow every switch.
 pub struct Device {
-    path: PathBuf,
+    path: Mutex<PathBuf>,
     pub cfg: Mutex<DeviceConfig>,
+}
+
+fn read_config(path: &PathBuf) -> DeviceConfig {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn write_config(path: &PathBuf, cfg: &DeviceConfig) -> Result<()> {
+    // Write-then-rename so a crash mid-write never corrupts the file.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(cfg)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 impl Device {
     pub fn load(path: PathBuf) -> Self {
-        let cfg = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Device { path, cfg: Mutex::new(cfg) }
+        let cfg = read_config(&path);
+        Device { path: Mutex::new(path), cfg: Mutex::new(cfg) }
+    }
+
+    /// Continues with another profile's settings file, carrying over the
+    /// device-wide AI settings. Saved before it takes effect.
+    pub fn switch_to(&self, path: PathBuf) -> Result<()> {
+        let mut guard = self.cfg.lock().map_err(|_| Error::msg("config lock poisoned"))?;
+        let mut next = read_config(&path);
+        next.llm = guard.llm.clone();
+        next.stt = guard.stt.clone();
+        write_config(&path, &next)?;
+        *guard = next;
+        *self.path.lock().map_err(|_| Error::msg("config path lock poisoned"))? = path;
+        Ok(())
     }
 
     pub fn get(&self) -> DeviceConfig {
@@ -108,10 +136,43 @@ impl Device {
     pub fn update(&self, f: impl FnOnce(&mut DeviceConfig)) -> Result<DeviceConfig> {
         let mut guard = self.cfg.lock().map_err(|_| Error::msg("config lock poisoned"))?;
         f(&mut guard);
-        // Write-then-rename so a crash mid-write never corrupts the file.
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&*guard)?)?;
-        std::fs::rename(&tmp, &self.path)?;
+        let path = self.path.lock().map_err(|_| Error::msg("config path lock poisoned"))?.clone();
+        write_config(&path, &guard)?;
         Ok(guard.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each profile keeps its own Google session and sync state; the AI
+    /// settings belong to the device and follow the switch.
+    #[test]
+    fn switching_keeps_sessions_apart_and_carries_the_ai_settings() {
+        let dir = std::env::temp_dir().join(format!("sm-dev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.json"), dir.join("b.json"));
+        let dev = Device::load(a.clone());
+        dev.update(|d| {
+            d.google.email = Some("work@example.com".into());
+            d.synced_local_modified = Some(7);
+            d.stt.language = "ko".into();
+        })
+        .unwrap();
+        dev.switch_to(b.clone()).unwrap();
+        let now = dev.get();
+        assert_eq!(now.google.email, None, "B has no session yet");
+        assert_eq!(now.synced_local_modified, None);
+        assert_eq!(now.stt.language, "ko", "AI settings follow the device");
+        dev.update(|d| d.google.email = Some("me@example.com".into())).unwrap();
+        dev.switch_to(a.clone()).unwrap();
+        assert_eq!(dev.get().google.email.as_deref(), Some("work@example.com"));
+        assert_eq!(dev.get().synced_local_modified, Some(7));
+        // Both files hold their own account.
+        let read = |p: &PathBuf| serde_json::from_str::<DeviceConfig>(&std::fs::read_to_string(p).unwrap()).unwrap().google.email;
+        assert_eq!(read(&b).as_deref(), Some("me@example.com"));
+        assert_eq!(read(&a).as_deref(), Some("work@example.com"));
     }
 }

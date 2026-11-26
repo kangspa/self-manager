@@ -15,7 +15,9 @@ use crate::schema::{self, TableDef};
 
 pub struct Db {
     conn: Mutex<Option<Connection>>,
-    pub path: PathBuf,
+    /// The live file. Changes only by `switch_to`, and only while `conn` is
+    /// locked, so code holding the connection always sees the matching path.
+    path: std::sync::RwLock<PathBuf>,
 }
 
 pub fn now_ms() -> i64 {
@@ -192,27 +194,48 @@ fn read_stamp(conn: &Connection) -> Result<i64> {
         .unwrap_or(0))
 }
 
-impl Db {
-    pub fn open(path: PathBuf) -> Result<Self> {
-        // If the repair itself cannot run (only a hand-made file at the stamp
-        // limit), the app still starts on the file as it is.
-        let conn = open_live(&path).or_else(|_| open_conn(&path))?;
-        // A restore cut short (crash) may have left work behind: its committed
-        // before-load copy is put in place now; files of restores that never
-        // committed are removed (the current before-load is never among them).
-        let backup = path.with_extension("db.before-load");
-        promote_before_load(&conn, &backup);
-        let pending: Option<String> = conn.query_row("SELECT value FROM meta WHERE key='before_load_pending'", [], |r| r.get(0)).optional().ok().flatten();
-        if let (Some(dir), Some(base)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
-            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let n = e.file_name().to_string_lossy().to_string();
-                let still_pending = pending.as_ref().is_some_and(|id| n.starts_with(&format!("{base}.before-load.new-{id}")));
-                if n.starts_with(&format!("{base}.incoming-")) || (n.starts_with(&format!("{base}.before-load.new-")) && !still_pending) {
-                    let _ = std::fs::remove_file(e.path());
-                }
+/// Opens the live DB at `path` and finishes what a crash may have left there.
+fn open_at(path: &Path) -> Result<Connection> {
+    // If the repair itself cannot run (only a hand-made file at the stamp
+    // limit), the app still starts on the file as it is.
+    let conn = open_live(path).or_else(|_| open_conn(path))?;
+    // A restore cut short (crash) may have left work behind: its committed
+    // before-load copy is put in place now; files of restores that never
+    // committed are removed (the current before-load is never among them).
+    let backup = path.with_extension("db.before-load");
+    promote_before_load(&conn, &backup);
+    let pending: Option<String> = conn.query_row("SELECT value FROM meta WHERE key='before_load_pending'", [], |r| r.get(0)).optional().ok().flatten();
+    if let (Some(dir), Some(base)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            let still_pending = pending.as_ref().is_some_and(|id| n.starts_with(&format!("{base}.before-load.new-{id}")));
+            if n.starts_with(&format!("{base}.incoming-")) || (n.starts_with(&format!("{base}.before-load.new-")) && !still_pending) {
+                let _ = std::fs::remove_file(e.path());
             }
         }
-        Ok(Db { conn: Mutex::new(Some(conn)), path })
+    }
+    Ok(conn)
+}
+
+impl Db {
+    pub fn open(path: PathBuf) -> Result<Self> {
+        let conn = open_at(&path)?;
+        Ok(Db { conn: Mutex::new(Some(conn)), path: std::sync::RwLock::new(path) })
+    }
+
+    /// The live DB file in use.
+    pub fn path(&self) -> PathBuf {
+        self.path.read().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    /// Continues on another live DB file (another profile's). The new file is
+    /// opened before the current one is let go, so a failure changes nothing.
+    pub fn switch_to(&self, path: PathBuf) -> Result<()> {
+        let conn = open_at(&path)?;
+        let mut guard = self.conn.lock().map_err(|_| Error::msg("db lock poisoned"))?;
+        *guard = Some(conn);
+        *self.path.write().map_err(|_| Error::msg("db path lock poisoned"))? = path;
+        Ok(())
     }
 
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
@@ -273,7 +296,10 @@ impl Db {
         //    The live DB is not involved yet; a failure here changes nothing.
         // A name of its own per restore: two restores at once (manual and Drive)
         // never share - or overwrite - each other's prepared file.
-        let staged = PathBuf::from(format!("{}.incoming-{:016x}", self.path.display(), rand::random::<u64>()));
+        // The file this restore is for; checked again under the connection lock,
+        // so a profile switch in between can never get another profile's content.
+        let live = self.path();
+        let staged = PathBuf::from(format!("{}.incoming-{:016x}", live.display(), rand::random::<u64>()));
         let remove_staged = || {
             let _ = std::fs::remove_file(&staged);
             for suffix in ["-wal", "-shm"] {
@@ -305,8 +331,11 @@ impl Db {
         //    new before-load" in the same transaction; afterwards the file is put
         //    in place - or at the next start, should the app stop first. A restore
         //    that doesn't commit just deletes its new file.
-        let backup = self.path.with_extension("db.before-load");
+        let backup = live.with_extension("db.before-load");
         let result = self.with(|conn| {
+            if self.path() != live {
+                return Err(Error::msg("프로필이 바뀌어 불러오기를 중단했습니다"));
+            }
             // An earlier restore's copy still waiting to be put in place holds the
             // only rollback of what that restore replaced: settle it first, and
             // restore nothing more until it is in place.
@@ -760,6 +789,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A profile switch moves every later read and write to the other file, and back.
+    #[test]
+    fn switch_to_moves_reads_and_writes_to_the_other_file() {
+        let dir = tmp("switch");
+        let (a, b) = (dir.join("a").join("live.db"), dir.join("b").join("live.db"));
+        std::fs::create_dir_all(a.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+        let db = Db::open(a.clone()).unwrap();
+        let count = |db: &Db| db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM memos", [], |r| r.get::<_, i64>(0))?)).unwrap();
+        db.write(|tx| upsert(tx, "memos", serde_json::json!({ "title": "in A" }).as_object().unwrap())).unwrap();
+        db.switch_to(b.clone()).unwrap();
+        assert_eq!(db.path(), b);
+        assert_eq!(count(&db), 0, "B starts empty");
+        db.write(|tx| upsert(tx, "memos", serde_json::json!({ "title": "in B" }).as_object().unwrap())).unwrap();
+        db.write(|tx| upsert(tx, "memos", serde_json::json!({ "title": "in B too" }).as_object().unwrap())).unwrap();
+        db.switch_to(a.clone()).unwrap();
+        assert_eq!(count(&db), 1, "A kept only its own row");
+        // A file that can't be opened leaves the current one in use.
+        assert!(db.switch_to(dir.join("missing-dir").join("live.db")).is_err());
+        assert_eq!(db.path(), a);
+        assert_eq!(count(&db), 1);
     }
 
     fn row(v: Value) -> Map<String, Value> {

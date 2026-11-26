@@ -9,6 +9,7 @@ mod merge;
 mod mobile;
 mod models;
 mod notif;
+mod profiles;
 mod queries;
 mod schema;
 mod stt;
@@ -29,9 +30,15 @@ pub struct AppState {
     pub db: db::Db,
     pub device: device::Device,
     pub http: reqwest::Client,
+    /// App data folder: shared files (AI models, profiles.json); also the
+    /// default profile's folder.
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
-    pub manual_path: PathBuf,
+    /// Profiles and the active one's folder (see profiles.rs).
+    pub profiles: Mutex<profiles::Registry>,
+    pub profile_root: std::sync::RwLock<PathBuf>,
+    /// Read-held by work bound to the active profile; a switch takes it.
+    pub profile_lock: tokio::sync::RwLock<()>,
     pub recorder: stt::Recorder,
     pub downloads: models::Downloads,
     pub uploads: attachments::Uploads,
@@ -43,26 +50,122 @@ pub struct AppState {
     closing: AtomicBool,
 }
 
+impl AppState {
+    /// The active profile's data folder (DB, files, recordings, device.json).
+    pub fn profile_dir(&self) -> PathBuf {
+        self.profile_root.read().map(|p| p.clone()).unwrap_or_else(|_| self.data_dir.clone())
+    }
+
+    pub fn manual_path(&self) -> PathBuf {
+        self.profile_dir().join("manual.db")
+    }
+}
+
+/// Holds the active profile for as long as the caller runs: a profile switch
+/// waits for it (briefly) or is refused, and while a switch is under way this
+/// fails at once instead of running against the profile being swapped in.
+///
+/// `screen` is the profile the calling screen shows: every command a screen
+/// calls requires it (the frontend sends it with every call), only the app's
+/// own background work passes None. Checked under the lock: a call from a screen whose profile
+/// was switched away - sent just before the switch, run just after - is
+/// refused instead of writing into the other account.
+pub fn hold<'a>(state: &'a AppState, screen: Option<&str>) -> Result<tokio::sync::RwLockReadGuard<'a, ()>> {
+    let guard = state.profile_lock.try_read().map_err(|_| Error::msg(profiles::BUSY))?;
+    if let Some(s) = screen {
+        let active = state.profiles.lock().map(|r| r.active.clone()).map_err(|_| Error::msg("profiles lock poisoned"))?;
+        if active != s {
+            return Err(Error::msg(profiles::SCREEN_STALE));
+        }
+    }
+    Ok(guard)
+}
+
+/// Runs `f` - replacing the whole DB (a load or merge) - only while no
+/// recording, meeting job or upload is in flight, and keeps them from starting
+/// until it is done (they register under the same jobs lock). The new content
+/// may lack the meeting or record they would save into, leaving an attachment
+/// that belongs to nothing.
+pub fn without_record_work<T>(app: &AppHandle, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let state = app.state::<AppState>();
+    let jobs = state.ai_jobs.lock().map_err(|_| Error::msg("jobs lock poisoned"))?;
+    if !jobs.is_empty() || state.recorder.busy() || state.uploads.busy() {
+        return Err(Error::msg("녹음·받아쓰기·요약·파일 업로드 중에는 DB를 불러오거나 합치지 않습니다. 끝난 뒤 다시 동기화해 주세요."));
+    }
+    f()
+}
+
+/// A transcription or summary still running (it writes into the active profile).
+pub fn ai_jobs_running(app: &AppHandle) -> bool {
+    app.state::<AppState>().ai_jobs.lock().map(|j| !j.is_empty()).unwrap_or(true)
+}
+
+// ---------------- Profiles ----------------
+
+#[tauri::command]
+async fn profile_list(app: AppHandle) -> Result<Value> {
+    profiles::list(&app)
+}
+
+/// After a switch: tidy the new profile's files, then sync it like at start.
+fn after_switch(app: &AppHandle) {
+    let _ = attachments::gc_local(app);
+    spawn_auto_load(app);
+}
+
+/// Payment notifications captured so far belong to the profile in use: take
+/// them in before it goes, or they would land in the next one's ledger.
+fn before_switch(app: &AppHandle) {
+    if let Err(e) = notif_sync_inner(app) {
+        eprintln!("notif sync before switch: {e}");
+    }
+}
+
+#[tauri::command]
+async fn profile_switch(app: AppHandle, id: String) -> Result<()> {
+    before_switch(&app);
+    profiles::switch(&app, &id).await?;
+    after_switch(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn profile_add(app: AppHandle) -> Result<String> {
+    before_switch(&app);
+    let id = profiles::add(&app).await?;
+    after_switch(&app);
+    Ok(id)
+}
+
+#[tauri::command]
+async fn profile_remove(app: AppHandle, id: String) -> Result<()> {
+    profiles::remove(&app, &id)
+}
+
 // ---------------- Generic data commands ----------------
 
 #[tauri::command]
-async fn db_list(state: State<'_, AppState>, table: String, query: Option<db::ListQuery>) -> Result<Vec<Value>> {
+async fn db_list(state: State<'_, AppState>, table: String, query: Option<db::ListQuery>, profile_token: String) -> Result<Vec<Value>> {
+    let _profile = hold(&state, Some(&profile_token))?;
     let q = query.unwrap_or_default();
     state.db.with(|c| db::list(c, &table, &q))
 }
 
 #[tauri::command]
-async fn db_get(state: State<'_, AppState>, table: String, id: i64) -> Result<Option<Value>> {
+async fn db_get(state: State<'_, AppState>, table: String, id: i64, profile_token: String) -> Result<Option<Value>> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.with(|c| db::get(c, &table, id))
 }
 
 #[tauri::command]
-async fn db_upsert(state: State<'_, AppState>, table: String, row: Map<String, Value>) -> Result<Value> {
+async fn db_upsert(state: State<'_, AppState>, table: String, row: Map<String, Value>, profile_token: String) -> Result<Value> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.write(|tx| db::upsert(tx, &table, &row))
 }
 
 #[tauri::command]
-async fn db_delete(state: State<'_, AppState>, table: String, id: i64) -> Result<()> {
+async fn db_delete(state: State<'_, AppState>, table: String, id: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.write(|tx| db::delete(tx, &table, id))
 }
 
@@ -77,7 +180,8 @@ struct BulkOp {
 
 /// Several writes in one transaction (reordering, template saves, ...).
 #[tauri::command]
-async fn db_bulk(state: State<'_, AppState>, ops: Vec<BulkOp>) -> Result<Vec<Value>> {
+async fn db_bulk(state: State<'_, AppState>, ops: Vec<BulkOp>, profile_token: String) -> Result<Vec<Value>> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.write(|tx| {
         let mut out = Vec::new();
         for op in &ops {
@@ -94,22 +198,26 @@ async fn db_bulk(state: State<'_, AppState>, ops: Vec<BulkOp>) -> Result<Vec<Val
 
 /// Move a work item (with its sub-items and AI notes) to another project, atomically.
 #[tauri::command]
-async fn work_move(state: State<'_, AppState>, id: i64, project_id: Option<i64>) -> Result<()> {
+async fn work_move(state: State<'_, AppState>, id: i64, project_id: Option<i64>, profile_token: String) -> Result<()> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.write(|tx| db::move_work_item(tx, id, project_id))
 }
 
 #[tauri::command]
-async fn expense_dashboard(state: State<'_, AppState>, from: String, to: String) -> Result<Value> {
+async fn expense_dashboard(state: State<'_, AppState>, from: String, to: String, profile_token: String) -> Result<Value> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.with(|c| queries::expense_dashboard(c, &from, &to))
 }
 
 #[tauri::command]
-async fn subscription_schedule(state: State<'_, AppState>, from: String, to: String) -> Result<Vec<Value>> {
+async fn subscription_schedule(state: State<'_, AppState>, from: String, to: String, profile_token: String) -> Result<Vec<Value>> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.with(|c| queries::subscription_schedule(c, &from, &to))
 }
 
 #[tauri::command]
-async fn daily_view(state: State<'_, AppState>, from: String, to: String) -> Result<Value> {
+async fn daily_view(state: State<'_, AppState>, from: String, to: String, profile_token: String) -> Result<Value> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.with(|c| queries::daily_view(c, &from, &to))
 }
 
@@ -121,7 +229,8 @@ fn notif_preview(rule: Value, title: String, text: String) -> Option<notif::Pars
 }
 
 #[tauri::command]
-async fn notif_ingest(state: State<'_, AppState>, items: Vec<notif::RawNotification>) -> Result<usize> {
+async fn notif_ingest(state: State<'_, AppState>, items: Vec<notif::RawNotification>, profile_token: String) -> Result<usize> {
+    let _profile = hold(&state, Some(&profile_token))?;
     state.db.write(|tx| notif::ingest(tx, &items))
 }
 
@@ -135,6 +244,7 @@ fn notif_sync_inner(app: &AppHandle) -> Result<usize> {
     if !cfg!(target_os = "android") {
         return Ok(0);
     }
+    let _profile = hold(app.state::<AppState>().inner(), None)?;
     mobile::set_watched(app, watched_packages(app)?)?;
     let items = mobile::drain_notifications(app)?;
     if items.is_empty() {
@@ -146,7 +256,8 @@ fn notif_sync_inner(app: &AppHandle) -> Result<usize> {
 }
 
 #[tauri::command]
-async fn notif_sync(app: AppHandle) -> Result<usize> {
+async fn notif_sync(app: AppHandle, profile_token: String) -> Result<usize> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     notif_sync_inner(&app)
 }
 
@@ -158,39 +269,46 @@ async fn native_call(app: AppHandle, cmd: String) -> Result<Value> {
 // ---------------- Backup / sync ----------------
 
 #[tauri::command]
-async fn sync_status(app: AppHandle, with_drive: bool) -> Result<sync::SyncStatus> {
+async fn sync_status(app: AppHandle, with_drive: bool, profile_token: String) -> Result<sync::SyncStatus> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     sync::status(&app, with_drive).await
 }
 
 #[tauri::command]
-async fn sync_manual_save(app: AppHandle) -> Result<i64> {
+async fn sync_manual_save(app: AppHandle, profile_token: String) -> Result<i64> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     sync::manual_save(&app)
 }
 
 #[tauri::command]
-async fn sync_load_manual(app: AppHandle) -> Result<()> {
+async fn sync_load_manual(app: AppHandle, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     sync::load_manual(&app)
 }
 
 #[tauri::command]
-async fn sync_drive_backup(app: AppHandle) -> Result<sync::Outcome> {
+async fn sync_drive_backup(app: AppHandle, profile_token: String) -> Result<sync::Outcome> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     // Merges first when Drive changed too, so the other device's work is kept.
     sync::reconcile(&app, sync::Mode::Backup, true, None).await
 }
 
 /// Full sync; `prefer` resolves conflicts ("local" = this device's auto-saved DB).
 #[tauri::command]
-async fn sync_now(app: AppHandle, prefer: Option<merge::Prefer>) -> Result<sync::Outcome> {
+async fn sync_now(app: AppHandle, prefer: Option<merge::Prefer>, profile_token: String) -> Result<sync::Outcome> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     sync::reconcile(&app, sync::Mode::Full, true, prefer).await
 }
 
 #[tauri::command]
-async fn sync_drive_load(app: AppHandle) -> Result<()> {
+async fn sync_drive_load(app: AppHandle, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     sync::drive_load(&app).await
 }
 
 #[tauri::command]
-async fn sync_set_auto(app: AppHandle, auto_backup: bool, auto_load: bool) -> Result<()> {
+async fn sync_set_auto(app: AppHandle, auto_backup: bool, auto_load: bool, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     if (auto_backup || auto_load) && !sync::logged_in(&app) {
         return Err(Error::msg("구글 로그인 후 켤 수 있습니다"));
     }
@@ -203,7 +321,8 @@ async fn sync_set_auto(app: AppHandle, auto_backup: bool, auto_load: bool) -> Re
 }
 
 #[tauri::command]
-async fn google_login(app: AppHandle) -> Result<String> {
+async fn google_login(app: AppHandle, profile_token: String) -> Result<String> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     #[cfg(desktop)]
     return google::login_desktop(&app).await;
     #[cfg(mobile)]
@@ -211,17 +330,20 @@ async fn google_login(app: AppHandle) -> Result<String> {
 }
 
 #[tauri::command]
-async fn google_logout(app: AppHandle) -> Result<()> {
+async fn google_logout(app: AppHandle, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     google::logout(&app).await
 }
 
 #[tauri::command]
-async fn gcal_sync(app: AppHandle) -> Result<calendar::SyncReport> {
+async fn gcal_sync(app: AppHandle, profile_token: String) -> Result<calendar::SyncReport> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     calendar::sync(&app).await
 }
 
 #[tauri::command]
-async fn event_delete(app: AppHandle, id: i64) -> Result<()> {
+async fn event_delete(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     let state = app.state::<AppState>();
     let gid: Option<String> = state.db.with(|c| Ok(db::get(c, "events", id)?.and_then(|e| e["gcal_id"].as_str().map(String::from))))?;
     state.db.write(|tx| db::delete(tx, "events", id))?;
@@ -247,7 +369,7 @@ async fn device_settings(app: AppHandle) -> Result<Value> {
         "gcal_last_sync": cfg.gcal_last_sync,
         "platform": if cfg!(target_os = "android") { "android" } else { "desktop" },
         "ai_enabled": cfg!(feature = "ai"),
-        "data_dir": app.state::<AppState>().data_dir,
+        "data_dir": app.state::<AppState>().profile_dir(),
     }))
 }
 
@@ -265,6 +387,14 @@ async fn device_set_stt(state: State<'_, AppState>, stt: device::SttConfig) -> R
 
 // ---------------- Meetings ----------------
 
+/// The meeting is still there. Its audio is only ever stored onto an existing
+/// meeting, or the attachment would belong to nothing.
+fn meeting_exists(app: &AppHandle, id: i64) -> Result<bool> {
+    app.state::<AppState>().db.with(|c| Ok(db::get(c, "meetings", id)?.is_some()))
+}
+
+const NO_MEETING: &str = "이 회의는 이미 지워졌습니다";
+
 fn set_meeting(app: &AppHandle, id: i64, fields: Value) -> Result<Value> {
     let mut row = fields.as_object().cloned().unwrap_or_default();
     row.insert("id".into(), json!(id));
@@ -274,11 +404,30 @@ fn set_meeting(app: &AppHandle, id: i64, fields: Value) -> Result<Value> {
 }
 
 #[tauri::command]
-async fn meeting_rec_start(app: AppHandle, id: i64) -> Result<()> {
-    let path = stt::audio_path(&app, id);
-    app.state::<AppState>().recorder.start(&path, id)?;
+/// Returns the recording's token; the chunks of this recording must carry it.
+async fn meeting_rec_start(app: AppHandle, id: i64, profile_token: String) -> Result<String> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    let state = app.state::<AppState>();
+    let path = stt::staged_path(&app, id);
+    let before: Option<String> = state.db.with(|c| Ok(db::get(c, "meetings", id)?.and_then(|m| m["status"].as_str().map(String::from))))?;
+    let token = {
+        // Checked and opened under the jobs lock (job_start checks the other way
+        // round under it too): a recording and a transcription / summary /
+        // import of the same meeting never run at once, so neither can leave
+        // the other's status behind.
+        let jobs = state.ai_jobs.lock().unwrap();
+        if jobs.contains_key(&id) {
+            return Err(Error::msg("받아쓰기·요약·가져오기가 끝난 뒤 녹음해 주세요"));
+        }
+        // Under the same lock a delete registers itself: once it is done the
+        // row is gone and this refuses; while it runs, the check above does.
+        if !meeting_exists(&app, id)? {
+            return Err(Error::msg(NO_MEETING));
+        }
+        state.recorder.start(&path, id, before)?
+    };
     set_meeting(&app, id, json!({ "status": "recording", "audio_path": path.to_string_lossy() }))?;
-    Ok(())
+    Ok(token)
 }
 
 /// Bytes of a binary IPC call. Desktop webviews deliver a raw body; Android's
@@ -299,24 +448,54 @@ fn body_bytes(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>> {
 /// Raw body: little-endian i16 PCM at 16 kHz. Header `x-meeting-id`.
 #[tauri::command]
 fn meeting_rec_append(request: tauri::ipc::Request<'_>, state: State<'_, AppState>) -> Result<()> {
+    // No profile lock: appends to the recording opened at start (see att_chunk).
     let id: i64 = request.headers().get("x-meeting-id").and_then(|v| v.to_str().ok()).and_then(|s| s.parse().ok()).ok_or_else(|| Error::msg("x-meeting-id 누락"))?;
-    state.recorder.append(id, &body_bytes(&request)?)
+    let token = request.headers().get("x-rec-token").and_then(|v| v.to_str().ok()).ok_or_else(|| Error::msg("x-rec-token 누락"))?.to_string();
+    state.recorder.append(id, &token, &body_bytes(&request)?)
 }
 
 #[tauri::command]
-async fn meeting_rec_stop(app: AppHandle, id: i64) -> Result<Value> {
-    let dur = app.state::<AppState>().recorder.stop(id)?;
+async fn meeting_rec_stop(app: AppHandle, id: i64, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    // Saving is work on the meeting until the file is its attachment: no
+    // delete, import or new recording slips in once the recorder lets go.
+    let _flag = job_start_inner(&app, id, true)?;
+    let _job = JobGuard(&app, id);
+    let stopped = app.state::<AppState>().recorder.stop(id)?;
+    let staged = stopped.path.clone();
+    if stopped.seconds <= 0.0 {
+        // Nothing was recorded (e.g. the microphone never started): the
+        // meeting keeps its previous recording, transcript and status.
+        let _ = std::fs::remove_file(&staged);
+        let m = app.state::<AppState>().db.with(|c| db::get(c, "meetings", id))?.unwrap_or(Value::Null);
+        if m["status"].as_str() != Some("recording") {
+            // Changed meanwhile by something else: leave it as it is.
+            return set_meeting(&app, id, json!({ "audio_path": null }));
+        }
+        return set_meeting(&app, id, json!({ "status": status_without_recording(&app, id, &m, stopped.before.as_deref())?, "audio_path": null }));
+    }
+    if !meeting_exists(&app, id)? {
+        let _ = std::fs::remove_file(&staged);
+        return Err(Error::msg(NO_MEETING));
+    }
     let name = format!("녹음 {}.wav", chrono::Local::now().format("%Y-%m-%d %H%M"));
-    attachments::adopt_file(&app, &stt::audio_path(&app, id), "meetings", id, "audio", &name, "audio/wav")?;
-    set_meeting(&app, id, json!({ "status": "recorded", "duration_sec": dur, "audio_path": null }))
+    attachments::adopt_file(&app, &staged, "meetings", id, "audio", &name, "audio/wav")?;
+    set_meeting(&app, id, json!({ "status": "recorded", "duration_sec": stopped.seconds, "audio_path": null }))
 }
 
 #[tauri::command]
-async fn meeting_import(app: AppHandle, id: i64, path: String) -> Result<Value> {
-    let dest = stt::audio_path(&app, id);
+async fn meeting_import(app: AppHandle, id: i64, path: String, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    let dest = stt::staged_path(&app, id);
     let src = PathBuf::from(path);
     let src_name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "녹음.wav".into());
     let d2 = dest.clone();
+    let _flag = job_start(&app, id)?;
+    let _job = JobGuard(&app, id);
+    // A delete can't run while this job is registered; one done before is caught here.
+    if !meeting_exists(&app, id)? {
+        return Err(Error::msg(NO_MEETING));
+    }
     set_meeting(&app, id, json!({ "status": "importing" }))?;
     let dur = tauri::async_runtime::spawn_blocking(move || stt::import_audio(&src, &d2)).await.map_err(|e| Error::msg(e.to_string()))?;
     match dur {
@@ -326,17 +505,51 @@ async fn meeting_import(app: AppHandle, id: i64, path: String) -> Result<Value> 
             set_meeting(&app, id, json!({ "status": "recorded", "duration_sec": dur, "audio_path": null, "error": null }))
         }
         Err(e) => {
+            // This import's own file; nothing else uses it.
+            let _ = std::fs::remove_file(&dest);
             set_meeting(&app, id, json!({ "status": "error", "error": e.to_string() }))?;
             Err(e)
         }
     }
 }
 
+/// The status to go back to after a recording that got no audio. The status
+/// from before it is used if it describes a finished state; one that says work
+/// is under way (left by a crash, say) is not brought back - the status then
+/// follows what the meeting actually has.
+fn status_without_recording(app: &AppHandle, id: i64, m: &Value, before: Option<&str>) -> Result<Option<String>> {
+    if let Some(b) = before.filter(|b| matches!(*b, "recorded" | "transcribed" | "done" | "error")) {
+        return Ok(Some(b.to_string()));
+    }
+    let has = |k: &str| m[k].as_str().is_some_and(|s| !s.trim().is_empty());
+    Ok(if has("summary_md") {
+        Some("done".into())
+    } else if has("transcript_json") {
+        Some("transcribed".into())
+    } else if attachments::role_file(app, "meetings", id, "audio")?.is_some() {
+        Some("recorded".into())
+    } else {
+        // Nothing yet: the table's default for a new meeting.
+        Some("recording".into())
+    })
+}
+
 fn job_start(app: &AppHandle, id: i64) -> Result<Arc<AtomicBool>> {
+    job_start_inner(app, id, false)
+}
+
+/// Registers work on meeting `id`. While it is registered no recording starts,
+/// no other job runs, the meeting can't be deleted and the profile can't be
+/// switched. `while_recording`: the job is the recording's own save.
+fn job_start_inner(app: &AppHandle, id: i64, while_recording: bool) -> Result<Arc<AtomicBool>> {
     let state = app.state::<AppState>();
     let mut jobs = state.ai_jobs.lock().unwrap();
     if jobs.contains_key(&id) {
         return Err(Error::msg("이미 처리 중입니다"));
+    }
+    // See meeting_rec_start: checked under the same lock.
+    if !while_recording && state.recorder.is_recording(id) {
+        return Err(Error::msg("녹음 중에는 할 수 없습니다. 녹음을 끝낸 뒤 다시 해 주세요."));
     }
     let flag = Arc::new(AtomicBool::new(false));
     jobs.insert(id, flag.clone());
@@ -347,15 +560,27 @@ fn job_end(app: &AppHandle, id: i64) {
     app.state::<AppState>().ai_jobs.lock().unwrap().remove(&id);
 }
 
-#[tauri::command]
-async fn meeting_cancel(app: AppHandle, id: i64) {
-    if let Some(f) = app.state::<AppState>().ai_jobs.lock().unwrap().get(&id) {
-        f.store(true, Ordering::SeqCst);
+/// Ends the job of a meeting when dropped (every return path).
+struct JobGuard<'a>(&'a AppHandle, i64);
+impl Drop for JobGuard<'_> {
+    fn drop(&mut self) {
+        job_end(self.0, self.1);
     }
 }
 
 #[tauri::command]
-async fn meeting_transcribe(app: AppHandle, id: i64) -> Result<Value> {
+async fn meeting_cancel(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
+    // Only the screen of the profile the job runs in may stop it (ids alone could match).
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    if let Some(f) = app.state::<AppState>().ai_jobs.lock().unwrap().get(&id) {
+        f.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn meeting_transcribe(app: AppHandle, id: i64, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     let cfg = app.state::<AppState>().device.get().stt;
     // The recording is an attachment; it may live only on another device if it
     // was larger than the sync limit (or excluded from sync).
@@ -381,7 +606,8 @@ async fn meeting_transcribe(app: AppHandle, id: i64) -> Result<Value> {
 }
 
 #[tauri::command]
-async fn meeting_summarize(app: AppHandle, id: i64) -> Result<Value> {
+async fn meeting_summarize(app: AppHandle, id: i64, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     let state = app.state::<AppState>();
     let m = state.db.with(|c| db::get(c, "meetings", id))?.ok_or_else(|| Error::msg("회의가 없습니다"))?;
     let segs: Vec<stt::Segment> = m["transcript_json"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()).unwrap_or_default().into_iter().filter_map(|v| {
@@ -408,7 +634,12 @@ async fn meeting_summarize(app: AppHandle, id: i64) -> Result<Value> {
 }
 
 #[tauri::command]
-async fn meeting_delete(app: AppHandle, id: i64) -> Result<()> {
+async fn meeting_delete(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    // Not while it records or other work runs on it, and nothing starts on it
+    // while it is being deleted: they would write into a meeting that is gone.
+    let _flag = job_start(&app, id).map_err(|_| Error::msg("녹음·받아쓰기·요약·가져오기가 끝난 뒤 지워 주세요"))?;
+    let _job = JobGuard(&app, id);
     let _ = std::fs::remove_file(stt::audio_path(&app, id));
     app.state::<AppState>().db.write(|tx| db::delete(tx, "meetings", id))?;
     attachments::gc_local(&app)?;
@@ -418,24 +649,29 @@ async fn meeting_delete(app: AppHandle, id: i64) -> Result<()> {
 // ---------------- Attachments ----------------
 
 #[tauri::command]
-async fn att_list(app: AppHandle, owner_table: String, owner_id: i64) -> Result<Vec<attachments::AttachmentView>> {
+async fn att_list(app: AppHandle, owner_table: String, owner_id: i64, profile_token: String) -> Result<Vec<attachments::AttachmentView>> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     attachments::list(&app, &owner_table, owner_id)
 }
 
 #[tauri::command]
-async fn att_begin(app: AppHandle, owner_table: String, owner_id: i64, name: String, mime: Option<String>) -> Result<String> {
+async fn att_begin(app: AppHandle, owner_table: String, owner_id: i64, name: String, mime: Option<String>, profile_token: String) -> Result<String> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     attachments::begin(&app, &owner_table, owner_id, &name, mime)
 }
 
 /// Raw body = next chunk of the file. Header `x-upload` = token from att_begin.
 #[tauri::command]
 fn att_chunk(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<()> {
+    // No profile lock: a chunk only adds to the upload opened by att_begin, and a
+    // switch is refused while one is open - so a tried switch never drops one.
     let token = request.headers().get("x-upload").and_then(|v| v.to_str().ok()).ok_or_else(|| Error::msg("x-upload 누락"))?.to_string();
     attachments::chunk(&app, &token, &body_bytes(&request)?)
 }
 
 #[tauri::command]
-async fn att_finish(app: AppHandle, token: String) -> Result<Value> {
+async fn att_finish(app: AppHandle, token: String, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || attachments::finish(&app2, &token)).await.map_err(|e| Error::msg(e.to_string()))?
 }
@@ -446,7 +682,8 @@ async fn att_cancel(app: AppHandle, token: String) {
 }
 
 #[tauri::command]
-async fn att_delete(app: AppHandle, id: i64) -> Result<()> {
+async fn att_delete(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     app.state::<AppState>().db.write(|tx| db::delete(tx, "attachments", id))?;
     attachments::gc_local(&app)?;
     Ok(())
@@ -455,7 +692,8 @@ async fn att_delete(app: AppHandle, id: i64) -> Result<()> {
 /// Opens an attachment with the system's default app. Stored files are named by
 /// hash, so a copy with the real name (and extension) is opened instead.
 #[tauri::command]
-async fn att_open(app: AppHandle, id: i64) -> Result<()> {
+async fn att_open(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     let row = app.state::<AppState>().db.with(|c| db::get(c, "attachments", id))?.ok_or_else(|| Error::msg("첨부 파일이 없습니다"))?;
     let src = attachments::local_path(&app, row["sha256"].as_str().unwrap_or(""));
     if !src.exists() {
@@ -470,18 +708,21 @@ async fn att_open(app: AppHandle, id: i64) -> Result<()> {
 }
 
 #[tauri::command]
-async fn att_summary(app: AppHandle) -> Result<Value> {
+async fn att_summary(app: AppHandle, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     attachments::summary(&app)
 }
 
 #[tauri::command]
-async fn att_set_limit(app: AppHandle, mb: f64) -> Result<()> {
+async fn att_set_limit(app: AppHandle, mb: f64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     attachments::set_limit_mb(&app, mb)
 }
 
 /// Syncs the DB first (so the file list is current), then only the files that differ.
 #[tauri::command]
-async fn files_sync(app: AppHandle) -> Result<Value> {
+async fn files_sync(app: AppHandle, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
     if let sync::Outcome::NeedsChoice { .. } = sync::reconcile(&app, sync::Mode::Full, true, None).await? {
         return Err(Error::msg("먼저 동기화 충돌에서 우선할 쪽을 골라 주세요"));
     }
@@ -560,14 +801,28 @@ pub fn run() {
             let cache_dir = app.path().app_cache_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             std::fs::create_dir_all(&cache_dir)?;
-            let db = db::Db::open(data_dir.join("live.db")).map_err(|e| e.to_string())?;
-            let device = device::Device::load(data_dir.join("device.json"));
+            // The profile used last; a profile folder that can't be opened falls
+            // back to the default one rather than not starting at all.
+            let mut registry = profiles::load(&data_dir);
+            let mut profile_dir = profiles::dir_of(&data_dir, &registry.active);
+            let db = match std::fs::create_dir_all(&profile_dir).map_err(error::Error::from).and_then(|_| db::Db::open(profile_dir.join("live.db"))) {
+                Ok(db) => db,
+                Err(_) if registry.active != profiles::DEFAULT_ID => {
+                    registry.active = profiles::DEFAULT_ID.into();
+                    profile_dir = data_dir.clone();
+                    db::Db::open(profile_dir.join("live.db")).map_err(|e| e.to_string())?
+                }
+                Err(e) => return Err(e.to_string().into()),
+            };
+            let device = device::Device::load(profile_dir.join("device.json"));
             let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600)).connect_timeout(std::time::Duration::from_secs(15)).build()?;
             app.manage(AppState {
                 db,
                 device,
                 http,
-                manual_path: data_dir.join("manual.db"),
+                profiles: Mutex::new(registry),
+                profile_root: std::sync::RwLock::new(profile_dir),
+                profile_lock: tokio::sync::RwLock::new(()),
                 data_dir,
                 cache_dir,
                 recorder: stt::Recorder::default(),
@@ -644,6 +899,10 @@ pub fn run() {
             sync_drive_backup,
             sync_drive_load,
             sync_set_auto,
+            profile_list,
+            profile_switch,
+            profile_add,
+            profile_remove,
             google_login,
             google_logout,
             gcal_sync,

@@ -42,6 +42,8 @@ struct AuthArgs {
     scopes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<String>,
+    /// Show the phone's account chooser first (login; profiles hold different accounts).
+    pick_account: bool,
 }
 
 #[allow(unused_variables)]
@@ -61,9 +63,9 @@ pub const NEEDS_CONSENT: &str = "구글 재로그인이 필요합니다";
 
 /// `account`: ask for that account only (silent refresh of the signed-in one);
 /// None lets the user pick (login).
-pub fn google_authorize(app: &AppHandle, interactive: bool, account: Option<&str>) -> Result<GoogleAuth> {
+pub fn google_authorize(app: &AppHandle, interactive: bool, account: Option<&str>, pick_account: bool) -> Result<GoogleAuth> {
     let scopes = crate::google::SCOPES.split(' ').map(String::from).collect();
-    run(app, "googleAuthorize", AuthArgs { interactive, scopes, account: account.map(String::from) })
+    run(app, "googleAuthorize", AuthArgs { interactive, scopes, account: account.map(String::from), pick_account })
 }
 
 #[derive(Deserialize, Serialize, Default)]

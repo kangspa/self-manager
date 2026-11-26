@@ -72,6 +72,7 @@ async fn check(resp: reqwest::Response) -> Result<reqwest::Response> {
 pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let state = app.state::<AppState>();
+    let profile = crate::profiles::active_id(app);
     // A new login always uses the built-in client.
     let cfg = built_in(&state.device.get().google);
     if cfg.client_id.trim().is_empty() {
@@ -84,7 +85,7 @@ pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     let port = listener.local_addr()?.port();
     let redirect = format!("http://127.0.0.1:{port}");
     let url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent&state={}",
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=select_account%20consent&state={}",
         urlencoding::encode(cfg.client_id.trim()),
         urlencoding::encode(&redirect),
         urlencoding::encode(SCOPES),
@@ -159,7 +160,7 @@ pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     .json()
     .await?;
     let email = fetch_email(&state.http, &tok.access_token).await.ok();
-    start_session(app, email.as_deref(), |d| {
+    start_session(app, &profile, email.as_deref(), |d| {
         d.google.access_token = Some(tok.access_token.clone());
         d.google.expires_at = now_s() + tok.expires_in.unwrap_or(3600) - 60;
         // This session belongs to the built-in client now.
@@ -204,12 +205,24 @@ fn remove_if_present(p: &std::path::Path) -> std::io::Result<()> {
 /// mid-way, none starts) the merge base is removed - a login that cannot remove
 /// it fails rather than merge against the other account's data - and then, in
 /// one config update with the new session, the ids, sync point and file list.
-async fn start_session(app: &AppHandle, email: Option<&str>, set: impl FnOnce(&mut crate::device::DeviceConfig)) -> Result<()> {
+async fn start_session(app: &AppHandle, profile: &str, email: Option<&str>, set: impl FnOnce(&mut crate::device::DeviceConfig)) -> Result<()> {
     let state = app.state::<AppState>();
+    // The login belongs to the profile it was started in: never store it into
+    // another one the user switched to meanwhile.
+    let _profile = crate::hold(&state, None)?;
+    if crate::profiles::active_id(app) != profile {
+        return Err(Error::session("로그인하는 동안 프로필이 바뀌어 로그인을 중단했습니다. 다시 로그인해 주세요."));
+    }
+    // One account per profile: its data and Drive backup live in that profile.
+    if let Some(e) = email {
+        if crate::profiles::profile_with_email(app, e, profile).is_some() {
+            return Err(Error::msg(format!("{e} 계정은 이미 다른 프로필에 있습니다. 계정 목록에서 그 프로필을 고르세요.")));
+        }
+    }
     let _no_sync = state.sync_lock.lock().await;
     let switched = !same_account(&state.device.get(), email);
     if switched {
-        remove_if_present(&state.data_dir.join("base.db")).map_err(|e| Error::msg(format!("이전 계정의 동기화 기준 파일(base.db)을 지우지 못해 로그인을 중단했습니다: {e}")))?;
+        remove_if_present(&state.profile_dir().join("base.db")).map_err(|e| Error::msg(format!("이전 계정의 동기화 기준 파일(base.db)을 지우지 못해 로그인을 중단했습니다: {e}")))?;
     }
     let cache = crate::attachments::remote_cache_path(app);
     state.device.update(|d| {
@@ -219,7 +232,9 @@ async fn start_session(app: &AppHandle, email: Option<&str>, set: impl FnOnce(&m
             let _ = std::fs::remove_file(&cache);
         }
         set(d);
-        d.google.session += 1;
+        // Unique across profiles too (time-based), so work of one profile's
+        // session can never pass the session check of another.
+        d.google.session = (d.google.session + 1).max(crate::db::now_ms() as u64);
     })?;
     Ok(())
 }
@@ -361,7 +376,7 @@ pub async fn access_token(app: &AppHandle) -> Result<String> {
         let Some(account) = g.email.clone().filter(|e| !e.is_empty()) else {
             return end(LOGIN_EXPIRED.into());
         };
-        let r = match crate::mobile::google_authorize(app, false, Some(&account)) {
+        let r = match crate::mobile::google_authorize(app, false, Some(&account), false) {
             Ok(r) => r,
             Err(e) if e.to_string().contains(crate::mobile::NEEDS_CONSENT) => return end(LOGIN_EXPIRED.into()),
             Err(e) if is_network_failure(&e.to_string()) => return Err(e),
@@ -381,7 +396,7 @@ pub async fn access_token(app: &AppHandle) -> Result<String> {
         state.device.update(|d| {
             // Only into the same session, and only while it is still signed in:
             // never revive one that ended or was logged out meanwhile.
-            if d.google.session == g.session && d.google.authorized {
+            if d.google.session == g.session && d.google.authorized && d.google.email == g.email {
                 d.google.access_token = Some(r.access_token.clone());
                 d.google.expires_at = now_s() + 50 * 60;
                 kept = true;
@@ -450,13 +465,15 @@ pub async fn access_token(app: &AppHandle) -> Result<String> {
 #[cfg(mobile)]
 pub async fn login_mobile(app: &AppHandle) -> Result<String> {
     let state = app.state::<AppState>();
-    // The user picks the account; start_session handles a switch.
-    let r = crate::mobile::google_authorize(app, true, None)?;
+    let profile = crate::profiles::active_id(app);
+    // The user picks the account (profiles hold different ones); start_session
+    // handles a switch and refuses an account another profile has.
+    let r = crate::mobile::google_authorize(app, true, None, true)?;
     let email = match r.email.clone().filter(|e| !e.is_empty()) {
         Some(e) => Some(e),
         None => fetch_email(&state.http, &r.access_token).await.ok(),
     };
-    start_session(app, email.as_deref(), |d| {
+    start_session(app, &profile, email.as_deref(), |d| {
         d.google.access_token = Some(r.access_token.clone());
         d.google.expires_at = now_s() + 50 * 60;
         d.google.email = email.clone();

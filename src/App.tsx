@@ -8,6 +8,7 @@ import Home from "./pages/Home";
 import { setWeekStart } from "./lib/date";
 import { useWeekStartSetting } from "./lib/weekStart";
 import { AppLogo, DailyIcon } from "./components/icons";
+import ProfileSwitcher from "./components/ProfileSwitcher";
 
 // Route-level code splitting keeps startup fast.
 const Memos = lazy(() => import("./pages/Memos"));
@@ -39,6 +40,7 @@ function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><AppLogo size={22} /> Self Manager</div>
+      <ProfileSwitcher />
       <nav>
         {NAV.map(([to, icon, label]) => (
           <NavLink key={to} to={to} end={to === "/"} className={({ isActive }) => `nav-item ${isActive ? "on" : ""}`} onClick={onNavigate}>

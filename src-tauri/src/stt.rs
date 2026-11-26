@@ -17,43 +17,90 @@ use crate::AppState;
 
 pub const SAMPLE_RATE: u32 = 16_000;
 
+/// Open recordings by meeting id, each with the token handed out at start.
+/// Chunks must bring that token: a meeting id alone could match a meeting of
+/// another profile (or an older recording), and chunks would land in it.
 #[derive(Default)]
 pub struct Recorder {
-    writers: Mutex<HashMap<i64, hound::WavWriter<BufWriter<File>>>>,
+    writers: Mutex<HashMap<i64, Open>>,
+}
+
+struct Open {
+    token: String,
+    path: PathBuf,
+    /// The meeting's status before recording, put back if nothing gets recorded.
+    before: Option<String>,
+    writer: hound::WavWriter<BufWriter<File>>,
+}
+
+/// A finished recording: its length, and the meeting's status from before it.
+pub struct Stopped {
+    pub seconds: f64,
+    pub before: Option<String>,
+    /// The finished WAV file.
+    pub path: PathBuf,
 }
 
 fn wav_spec() -> hound::WavSpec {
     hound::WavSpec { channels: 1, sample_rate: SAMPLE_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int }
 }
 
+/// A file of its own for one recording or import of a meeting, so two of them
+/// (a recording being saved while an import starts, say) never share a file.
+pub fn staged_path(app: &AppHandle, meeting_id: i64) -> PathBuf {
+    app.state::<AppState>().profile_dir().join("audio").join(format!("meeting-{meeting_id}-{:016x}.wav", rand::random::<u64>()))
+}
+
+/// Where recordings went before they became attachments (read for old meetings only).
 pub fn audio_path(app: &AppHandle, meeting_id: i64) -> PathBuf {
-    app.state::<AppState>().data_dir.join("audio").join(format!("meeting-{meeting_id}.wav"))
+    app.state::<AppState>().profile_dir().join("audio").join(format!("meeting-{meeting_id}.wav"))
 }
 
 impl Recorder {
-    pub fn start(&self, path: &Path, meeting_id: i64) -> Result<()> {
+    pub fn is_recording(&self, meeting_id: i64) -> bool {
+        self.writers.lock().map(|w| w.contains_key(&meeting_id)).unwrap_or(true)
+    }
+
+    /// A recording is open (its file and row belong to the active profile).
+    pub fn busy(&self) -> bool {
+        self.writers.lock().map(|w| !w.is_empty()).unwrap_or(true)
+    }
+
+    /// Opens the recording; returns the token its chunks must carry. A
+    /// meeting already recording is refused: starting again would recreate
+    /// the file and lose what was recorded so far.
+    pub fn start(&self, path: &Path, meeting_id: i64, before: Option<String>) -> Result<String> {
+        let mut map = self.writers.lock().unwrap();
+        if map.contains_key(&meeting_id) {
+            return Err(Error::msg("이미 녹음 중입니다"));
+        }
         std::fs::create_dir_all(path.parent().unwrap())?;
         let w = hound::WavWriter::create(path, wav_spec()).map_err(|e| Error::msg(e.to_string()))?;
-        self.writers.lock().unwrap().insert(meeting_id, w);
-        Ok(())
+        let token = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
+        map.insert(meeting_id, Open { token: token.clone(), path: path.to_path_buf(), before, writer: w });
+        Ok(token)
     }
 
     /// `pcm` is little-endian i16 mono at 16 kHz, streamed from the webview.
-    pub fn append(&self, meeting_id: i64, pcm: &[u8]) -> Result<()> {
+    pub fn append(&self, meeting_id: i64, token: &str, pcm: &[u8]) -> Result<()> {
         let mut map = self.writers.lock().unwrap();
-        let w = map.get_mut(&meeting_id).ok_or_else(|| Error::msg("녹음이 시작되지 않았습니다"))?;
+        let open = map.get_mut(&meeting_id).ok_or_else(|| Error::msg("녹음이 시작되지 않았습니다"))?;
+        if open.token != token {
+            return Err(Error::msg("다른 녹음의 데이터라 받지 않았습니다"));
+        }
+        let w = &mut open.writer;
         for ch in pcm.chunks_exact(2) {
             w.write_sample(i16::from_le_bytes([ch[0], ch[1]])).map_err(|e| Error::msg(e.to_string()))?;
         }
         Ok(())
     }
 
-    /// Finalizes the WAV header. Returns the duration in seconds.
-    pub fn stop(&self, meeting_id: i64) -> Result<f64> {
-        let w = self.writers.lock().unwrap().remove(&meeting_id).ok_or_else(|| Error::msg("녹음 중이 아닙니다"))?;
-        let samples = w.len();
-        w.finalize().map_err(|e| Error::msg(e.to_string()))?;
-        Ok(samples as f64 / SAMPLE_RATE as f64)
+    /// Finalizes the WAV header.
+    pub fn stop(&self, meeting_id: i64) -> Result<Stopped> {
+        let open = self.writers.lock().unwrap().remove(&meeting_id).ok_or_else(|| Error::msg("녹음 중이 아닙니다"))?;
+        let samples = open.writer.len();
+        open.writer.finalize().map_err(|e| Error::msg(e.to_string()))?;
+        Ok(Stopped { seconds: samples as f64 / SAMPLE_RATE as f64, before: open.before, path: open.path })
     }
 }
 
@@ -205,5 +252,36 @@ mod tests {
         let mut r = LinearResampler::new(48_000, 16_000);
         let total: usize = (0..10).map(|_| r.process(&vec![0.5; 4800]).len()).sum();
         assert!((15_990..=16_010).contains(&total), "{total}");
+    }
+}
+
+#[cfg(test)]
+mod recorder_tests {
+    use super::*;
+
+    /// Chunks only reach the recording they belong to: the same meeting id
+    /// with another token (another profile's screen, an older recording) is refused.
+    #[test]
+    fn chunks_need_the_token_of_the_open_recording() {
+        let dir = std::env::temp_dir().join(format!("sm-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rec = Recorder::default();
+        let path = dir.join("meeting-7.wav");
+        let token = rec.start(&path, 7, Some("transcribed".into())).unwrap();
+        assert!(rec.busy());
+        let second = vec![0u8; (SAMPLE_RATE * 2) as usize];
+        assert!(rec.append(7, "someone-else", &second).is_err());
+        rec.append(7, &token, &second).unwrap();
+        // A second start while it records is refused and keeps what was recorded.
+        assert!(rec.start(&path, 7, None).is_err());
+        // A recording started again for the same id hands out a new token.
+        let done = rec.stop(7).unwrap();
+        assert!((done.seconds - 1.0).abs() < 1e-9, "only the one valid second was written");
+        assert_eq!(done.before.as_deref(), Some("transcribed"));
+        let again = rec.start(&path, 7, None).unwrap();
+        assert_ne!(again, token);
+        assert!(rec.append(7, &token, &second).is_err(), "the old recording's token no longer fits");
+        assert_eq!(rec.stop(7).unwrap().seconds, 0.0, "nothing recorded this time");
+        assert!(!rec.busy());
     }
 }
