@@ -9,6 +9,7 @@ import { setWeekStart } from "./lib/date";
 import { useWeekStartSetting } from "./lib/weekStart";
 import { AppLogo, DailyIcon } from "./components/icons";
 import ProfileSwitcher from "./components/ProfileSwitcher";
+import { useHiddenNav } from "./lib/navPrefs";
 
 // Route-level code splitting keeps startup fast.
 const Memos = lazy(() => import("./pages/Memos"));
@@ -22,6 +23,7 @@ const Calendar = lazy(() => import("./pages/Calendar"));
 const Work = lazy(() => import("./pages/work/Work"));
 const MeetingDetail = lazy(() => import("./pages/work/MeetingDetail"));
 const Settings = lazy(() => import("./pages/settings/Settings"));
+const Chat = lazy(() => import("./pages/Chat"));
 
 export const NAV: [string, ReactNode, string][] = [
   ["/", "🏠", "홈"],
@@ -33,22 +35,25 @@ export const NAV: [string, ReactNode, string][] = [
   ["/daily", <DailyIcon key="daily" />, "일일 관리"],
   ["/calendar", "🗓️", "일정"],
   ["/work", "💼", "업무"],
-  ["/settings", "⚙️", "설정"],
+  ["/chat", "💬", "챗봇"],
 ];
 
 function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }) {
+  // Menus hidden in 설정 › 일반 (their pages stay reachable by link).
+  const { hidden } = useHiddenNav();
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><AppLogo size={22} /> Self Manager</div>
-      <ProfileSwitcher />
       <nav>
-        {NAV.map(([to, icon, label]) => (
+        {NAV.filter(([to]) => !hidden.includes(to)).map(([to, icon, label]) => (
           <NavLink key={to} to={to} end={to === "/"} className={({ isActive }) => `nav-item ${isActive ? "on" : ""}`} onClick={onNavigate}>
             <span className="nav-icon">{icon}</span>
             {label}
           </NavLink>
         ))}
       </nav>
+      {/* Accounts and settings live at the bottom (see ProfileSwitcher). */}
+      <ProfileSwitcher onNavigate={onNavigate} />
     </aside>
   );
 }
@@ -62,7 +67,7 @@ function Shell() {
   useEffect(() => {
     if (weekStart !== null) setWeekStart(weekStart);
   }, [weekStart]);
-  const title = NAV.find(([to]) => (to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(to)))?.[2] ?? "";
+  const title = loc.pathname.startsWith("/settings") ? "설정" : (NAV.find(([to]) => (to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(to)))?.[2] ?? "");
   return (
     <div className="app">
       <Sidebar open={drawer} onNavigate={() => setDrawer(false)} />
@@ -72,7 +77,7 @@ function Shell() {
           <button className="icon-btn" onClick={() => setDrawer(true)} aria-label="메뉴">☰</button>
           <span className="topbar-title">{title}</span>
         </div>
-        <div className="content">
+        <div className={`content ${loc.pathname.startsWith("/chat") ? "full" : ""}`}>
           <Suspense fallback={<div className="empty">불러오는 중…</div>}>
             <Routes>
               <Route path="/" element={<Home />} />
@@ -87,6 +92,7 @@ function Shell() {
               <Route path="/work" element={<Work />} />
               <Route path="/work/meeting/:id" element={<MeetingDetail />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/chat" element={<Chat />} />
             </Routes>
           </Suspense>
         </div>

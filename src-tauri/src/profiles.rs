@@ -107,7 +107,7 @@ pub fn list(app: &AppHandle) -> Result<Value> {
         .map(|p| {
             let g = account_of(app, &p.id);
             let logged_in = g.authorized && (g.refresh_token.is_some() || cfg!(mobile));
-            json!({ "id": p.id, "email": g.email, "logged_in": logged_in, "active": p.id == r.active, "default": p.id == DEFAULT_ID })
+            json!({ "id": p.id, "email": g.email, "picture": g.picture, "logged_in": logged_in, "active": p.id == r.active, "default": p.id == DEFAULT_ID })
         })
         .collect();
     Ok(json!({ "active": r.active, "profiles": items }))
@@ -121,6 +121,8 @@ fn idle(app: &AppHandle) -> bool {
 
 pub async fn switch(app: &AppHandle, id: &str) -> Result<()> {
     let state = app.state::<AppState>();
+    // A chatbot answer only reads this profile: stopped rather than waited for.
+    crate::chat::cancel();
     // Refused before waiting: a waiting switch makes new calls fail, which
     // would drop the chunks of a running recording or upload.
     if !idle(app) {

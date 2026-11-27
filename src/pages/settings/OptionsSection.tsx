@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { db } from "../../lib/api";
 import { OptionItem, useOptions } from "../../lib/hooks";
-import { confirmDialog } from "../../components/ui";
+import { confirmDialog, Fold } from "../../components/ui";
 
 export const OPTION_SETS: [string, string, string][] = [
   ["expense.location", "가계부 · 결제 위치", "알림 가계부에 앱을 등록하면 앱 이름으로 자동 추가됩니다"],
@@ -44,15 +44,14 @@ function OptionSet({ setKey, title, hint }: { setKey: string; title: string; hin
     setLabel("");
   };
   return (
-    <div className="card">
-      <div className="section-title">{title}</div>
-      {hint && <div className="faint small" style={{ marginTop: -6, marginBottom: 8 }}>{hint}</div>}
+    <Fold head={<><b>{title}</b> <span className="faint small">{list.filter((o) => !o.archived).length}개</span></>}>
+      {hint && <div className="faint small" style={{ marginBottom: 8 }}>{hint}</div>}
       <div className="list">{list.map((o, i) => <OptionRow key={o.id} o={o} list={list} i={i} />)}</div>
       <div className="row" style={{ marginTop: 8 }}>
         <input className="grow" placeholder="새 값" value={label} onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()} />
         <button className="btn sm" onClick={add}>추가</button>
       </div>
-    </div>
+    </Fold>
   );
 }
 
@@ -60,7 +59,7 @@ export default function OptionsSection() {
   return (
     <div>
       <p className="muted" style={{ marginTop: 0 }}>가계부와 목표에서 고르는 선택형 값을 직접 구성합니다.</p>
-      <div className="grid2">{OPTION_SETS.map(([k, t, h]) => <OptionSet key={k} setKey={k} title={t} hint={h} />)}</div>
+      <div className="stack">{OPTION_SETS.map(([k, t, h]) => <OptionSet key={k} setKey={k} title={t} hint={h} />)}</div>
     </div>
   );
 }

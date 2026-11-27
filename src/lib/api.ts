@@ -75,7 +75,7 @@ export const db = {
 };
 
 /** One per Google account; each has its own data (see src-tauri/src/profiles.rs). */
-export type ProfileInfo = { id: string; email: string | null; logged_in: boolean; active: boolean; default: boolean };
+export type ProfileInfo = { id: string; email: string | null; picture: string | null; logged_in: boolean; active: boolean; default: boolean };
 export type ProfileList = { active: string; profiles: ProfileInfo[] };
 
 export type SyncStatus = {
@@ -106,10 +106,12 @@ export type DeviceSettings = {
   platform: "android" | "desktop";
   ai_enabled: boolean;
   models_size: number;
+  /** This device's total memory (bytes; 0 if unknown). */
+  total_ram: number;
   data_dir: string;
 };
 export type ModelKind = "stt" | "llm";
-export type ModelInfo = { kind: ModelKind; file: string; label: string; note: string; size: number; installed: boolean; preset: boolean; partial: number; downloading: boolean };
+export type ModelInfo = { kind: ModelKind; file: string; label: string; note: string; size: number; installed: boolean; preset: boolean; partial: number; downloading: boolean; /** Estimated memory while it runs (bytes). */ ram: number };
 export type SyncOutcome =
   | { kind: "nothing" | "uploaded" | "downloaded" | "remote_newer" }
   | { kind: "merged"; from_local: number; from_remote: number; conflicts: number }
@@ -124,6 +126,12 @@ export type Attachment = Row & {
 };
 
 export type Parsed = { name: string; amount: number; purchased_at: string };
+
+export type ChatSession = { id: number; title: string; created_at: number; updated_at: number };
+export type ChatTool = { name: string; label: string; note: string; links?: { title: string; url: string }[] };
+export type ChatMessage = { id: number; role: "user" | "assistant"; content: string; tools: ChatTool[]; created_at: number };
+/** Progress of the answer being made (the `chat-stream` event). */
+export type ChatStream = { session: number; text: string; tools: ChatTool[]; status: string | null };
 
 export const api = {
   /** Move a work item with its sub-items and AI notes to another project (one transaction). */
@@ -220,6 +228,16 @@ export const api = {
   },
   filesSync: () => invoke<{ uploaded: number; downloaded: number; removed_from_drive: number; failed: string[] }>("files_sync"),
   models: () => invoke<ModelInfo[]>("models_list"),
+  chatSessions: () => invoke<ChatSession[]>("chat_sessions"),
+  chatMessages: (session: number) => invoke<ChatMessage[]>("chat_messages", { session }),
+  /** Waits for the whole answer; progress comes as `chat-stream` events. */
+  /** `web`: the chatbot may search and read the internet for this answer. */
+  chatSend: (session: number | null, text: string, web: boolean) => invoke<{ session: number; message: ChatMessage }>("chat_send", { session, text, web }),
+  chatCancel: () => invoke("chat_cancel"),
+  /** The 🌐 switch; takes effect at once, also for the answer being made. */
+  chatSetWeb: (on: boolean) => invoke("chat_set_web", { on }),
+  chatRename: (session: number, title: string) => invoke("chat_rename", { session, title }),
+  chatDelete: (session: number) => invoke("chat_delete", { session }),
   modelDownload: (kind: ModelKind, file?: string, url?: string) => invoke<string>("model_download", { kind, file: file ?? null, url: url ?? null }),
   modelCancel: (file: string) => invoke("model_cancel", { file }),
   modelDelete: (kind: ModelKind, file: string) => invoke("model_delete", { kind, file }),

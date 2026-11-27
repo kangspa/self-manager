@@ -222,3 +222,21 @@ export function Markdown({ text }: { text: string }) {
   flush();
   return <div className="md">{out}</div>;
 }
+
+/**
+ * A settings card that shows only its title line until clicked, then opens the
+ * fields below it full width (narrow screens never squeeze the inputs).
+ * `head` must not contain buttons: the whole line is the toggle.
+ */
+export function Fold({ head, children, defaultOpen = false, faded }: { head: ReactNode; children: ReactNode; defaultOpen?: boolean; faded?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`card fold ${open ? "open" : ""}`} style={faded ? { opacity: 0.55 } : undefined}>
+      <button type="button" className="fold-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <span className="fold-title">{head}</span>
+        <span className="fold-caret" aria-hidden>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && <div className="fold-body">{children}</div>}
+    </div>
+  );
+}

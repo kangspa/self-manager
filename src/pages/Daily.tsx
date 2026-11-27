@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { richPlain } from "../lib/rich";
 import { Link } from "react-router-dom";
 import { api, db, Row } from "../lib/api";
 import { useLoad, useRows } from "../lib/hooks";
 import { addDays, fmtDate, monthRange, parseYmd, today, weekHead, weekRange, WEEKDAYS } from "../lib/date";
 import { useWeekStart } from "../lib/weekStart";
-import { AutoText, Chip, Empty, Modal, PageHeader } from "../components/ui";
+import { Chip, Empty, Modal, PageHeader } from "../components/ui";
+import { RichText } from "../components/RichText";
 import { PresetIcon } from "../components/EmojiPicker";
 import { DailyIcon } from "../components/icons";
 
@@ -53,7 +55,7 @@ function DayModal({ date, day, presets, onClose }: { date: string; day: Day; pre
       {memoFor !== undefined && (
         <div className="section" style={{ marginTop: 14 }}>
           <div className="field-label">{memoFor ? presets.find((p) => p.id === memoFor)?.label : "자유 메모"}</div>
-          <AutoText className="boxed" value={note} onChange={setNote} minRows={2} autoFocus placeholder="무엇을 했는지 짧게" />
+          <RichText value={note} onChange={setNote} autoFocus placeholder="무엇을 했는지 짧게" owner={undefined} />
           <div className="row" style={{ marginTop: 6 }}>
             <button className="btn primary sm" onClick={saveNote}>추가</button>
             <button className="btn sm" onClick={() => setMemoFor(undefined)}>취소</button>
@@ -70,7 +72,7 @@ function DayModal({ date, day, presets, onClose }: { date: string; day: Day; pre
               <PresetIcon emoji={p?.emoji} color={p?.color || "#9b9b9b"} />
               <div className="grow">
                 <b>{p?.label ?? "메모"}</b>
-                {l.note && <div className="small" style={{ whiteSpace: "pre-wrap" }}>{l.note}</div>}
+                {l.note && <div className="small" style={{ whiteSpace: "pre-wrap" }}>{richPlain(l.note)}</div>}
               </div>
               <span className="meta">{new Date(l.created_at).toTimeString().slice(0, 5)}</span>
               <button className="icon-btn" onClick={() => db.remove("daily_logs", l.id)} aria-label="삭제">✕</button>
@@ -122,7 +124,7 @@ export default function Daily() {
           {pending.map((id) => { const p = pmap.get(id); return p ? <Chip key={`p${id}`} label={compact && p.emoji ? "" : p.label} color={p.color} icon={p.emoji ? <PresetIcon emoji={p.emoji} color={p.color} size={16} /> : undefined} faded /> : null; })}
         </div>
         {!compact && notes.map((l) => (
-          <div key={l.id} className="daily-note" style={{ ["--c" as any]: pmap.get(l.preset_id)?.color }}>{l.note}</div>
+          <div key={l.id} className="daily-note" style={{ ["--c" as any]: pmap.get(l.preset_id)?.color }}>{richPlain(l.note)}</div>
         ))}
         {compact && notes.length > 0 && <span className="faint small">✎ {notes.length}</span>}
       </div>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { db, Row } from "../../lib/api";
 import { useRows } from "../../lib/hooks";
 import { WEEKDAYS } from "../../lib/date";
-import { confirmDialog, Empty, Field, Modal } from "../../components/ui";
+import { confirmDialog, Empty, Field, Modal, Fold } from "../../components/ui";
 import { EmojiPicker, PresetIcon } from "../../components/EmojiPicker";
 import { ColorPicker } from "../../components/ColorPicker";
 import { DiaryField, parseFields } from "../Diary";
@@ -30,7 +30,7 @@ function TemplateEditor({ t }: { t: Row }) {
     upd(a);
   };
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <Fold head={<><b>{t.name || "이름 없는 템플릿"}</b> {t.is_default ? <span className="badge ok">기본</span> : null} <span className="faint small">항목 {fields.length}개</span></>}>
       <div className="row" style={{ marginBottom: 8 }}>
         <input className="grow" style={{ fontWeight: 650 }} value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} />
         {t.is_default ? <span className="badge ok">기본</span> : <button className="btn sm" onClick={async () => { const all = await db.list("diary_templates"); await db.bulk(all.map((x) => ({ table: "diary_templates" as const, row: { id: x.id, is_default: x.id === t.id ? 1 : 0 } }))); }}>기본으로</button>}
@@ -53,7 +53,7 @@ function TemplateEditor({ t }: { t: Row }) {
         <span className="spacer" />
         {dirty && <button className="btn sm primary" onClick={save}>저장</button>}
       </div>
-    </div>
+    </Fold>
   );
 }
 
@@ -116,8 +116,8 @@ function PresetRow({ p, rules, i, list }: { p: Row; rules: Row[]; i: number; lis
     await db.bulk(a.map((x, k) => ({ table: "daily_presets" as const, row: { id: x.id, sort: k } })));
   };
   return (
-    <div className="card" style={{ marginBottom: 8, opacity: p.archived ? 0.5 : 1 }}>
-      <div className="row nowrap">
+    <Fold faded={!!p.archived} head={<><PresetIcon emoji={p.emoji} color={p.color} /> <b>{p.label}</b> <span className="faint small">{p.kind === "memo" ? "메모형" : "체크형"}{p.archived ? " · 숨김" : ""}</span></>}>
+      <div className="row">
         <button className="btn icon-pick" onClick={() => setIconOpen(true)} title="이모지·배경색"><PresetIcon emoji={p.emoji} color={p.color} /></button>
         {iconOpen && <IconModal p={p} onClose={() => setIconOpen(false)} />}
         <input className="grow" value={label} onChange={(e) => setLabel(e.target.value)} onBlur={() => label.trim() && label !== p.label && db.upsert("daily_presets", { id: p.id, label: label.trim() })} />
@@ -154,7 +154,7 @@ function PresetRow({ p, rules, i, list }: { p: Row; rules: Row[]; i: number; lis
           </>
         )}
       </div>
-    </div>
+    </Fold>
   );
 }
 

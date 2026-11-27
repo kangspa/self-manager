@@ -25,7 +25,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/files/**"
+          "$APPDATA/files/**",
+          "$APPDATA/profiles/*/files/**"
         ]
       }
     }

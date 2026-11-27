@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 use crate::error::{Error, Result};
 use crate::AppState;
 
-pub const SCOPES: &str = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email";
+pub const SCOPES: &str = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const BACKUP_NAME: &str = "selfmanager-backup.db";
 const FOLDER_NAME: &str = "SelfManager";
@@ -159,8 +159,11 @@ pub async fn login_desktop(app: &AppHandle) -> Result<String> {
     .await?
     .json()
     .await?;
-    let email = fetch_email(&state.http, &tok.access_token).await.ok();
+    let user = fetch_user(&state.http, &tok.access_token).await.ok();
+    let email = user.as_ref().map(|u| u.0.clone());
+    let picture = user.and_then(|u| u.1);
     start_session(app, &profile, email.as_deref(), |d| {
+        d.google.picture = picture.clone();
         d.google.access_token = Some(tok.access_token.clone());
         d.google.expires_at = now_s() + tok.expires_in.unwrap_or(3600) - 60;
         // This session belongs to the built-in client now.
@@ -325,9 +328,17 @@ fn is_dead_grant(status: reqwest::StatusCode, body: &str) -> bool {
     status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_grant")
 }
 
+// Android checks whose token a silent refresh returned.
+#[cfg_attr(desktop, allow(dead_code))]
 async fn fetch_email(http: &reqwest::Client, token: &str) -> Result<String> {
+    Ok(fetch_user(http, token).await?.0)
+}
+
+/// The account's address and, with the profile scope, its picture.
+async fn fetch_user(http: &reqwest::Client, token: &str) -> Result<(String, Option<String>)> {
     let v: Value = check(http.get("https://www.googleapis.com/oauth2/v3/userinfo").bearer_auth(token).send().await?).await?.json().await?;
-    Ok(v["email"].as_str().unwrap_or("").to_string())
+    let picture = v["picture"].as_str().filter(|p| p.starts_with("https://")).map(String::from);
+    Ok((v["email"].as_str().unwrap_or("").to_string(), picture))
 }
 
 /// Returns a valid access token, refreshing (desktop) or asking the native
@@ -469,11 +480,11 @@ pub async fn login_mobile(app: &AppHandle) -> Result<String> {
     // The user picks the account (profiles hold different ones); start_session
     // handles a switch and refuses an account another profile has.
     let r = crate::mobile::google_authorize(app, true, None, true)?;
-    let email = match r.email.clone().filter(|e| !e.is_empty()) {
-        Some(e) => Some(e),
-        None => fetch_email(&state.http, &r.access_token).await.ok(),
-    };
+    let user = fetch_user(&state.http, &r.access_token).await.ok();
+    let email = r.email.clone().filter(|e| !e.is_empty()).or_else(|| user.as_ref().map(|u| u.0.clone()));
+    let picture = user.and_then(|u| u.1);
     start_session(app, &profile, email.as_deref(), |d| {
+        d.google.picture = picture.clone();
         d.google.access_token = Some(r.access_token.clone());
         d.google.expires_at = now_s() + 50 * 60;
         d.google.email = email.clone();
@@ -497,6 +508,7 @@ pub async fn logout(app: &AppHandle) -> Result<()> {
         d.google.client_id.clear();
         d.google.client_secret.clear();
         d.google.email = None;
+        d.google.picture = None;
         d.google.authorized = false;
         d.google.expires_at = 0;
         d.drive_file_id = None;

@@ -3,7 +3,8 @@ import { db, Filter, Row } from "../../lib/api";
 import { useAutosave, useOptions, useRows } from "../../lib/hooks";
 import { monthRange, nowSpace, won, ym } from "../../lib/date";
 import { Attachments } from "../../components/Attachments";
-import { AutoText, confirmDialog, Empty, Field, Modal, OptionChip, OptionSelect, SearchBox, useDebounced } from "../../components/ui";
+import { confirmDialog, Empty, Field, Modal, OptionChip, OptionSelect, SearchBox, useDebounced } from "../../components/ui";
+import { RichText } from "../../components/RichText";
 
 export function useLedgerOptions() {
   return { loc: useOptions("expense.location"), item: useOptions("expense.item"), status: useOptions("expense.status") };
@@ -66,7 +67,7 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
         </Field>
       </div>
       <Field label="메모">
-        <AutoText className="boxed" value={d.memo ?? ""} onChange={(v) => set("memo", v)} placeholder="구매 이유, 옵션, 교환/환불 메모 등 자유롭게" minRows={4} />
+        <RichText value={d.memo ?? ""} onChange={(v) => set("memo", v)} placeholder="구매 이유, 옵션, 교환/환불 메모 등 자유롭게" owner={row.id ? { table: "expenses", id: row.id } : undefined} />
       </Field>
       {!isNew && <Attachments ownerTable="expenses" ownerId={row.id} title="영수증·첨부 파일" />}
       {d.raw_text && (

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { RichText } from "../../components/RichText";
+import { appendRich, richToMarkdown } from "../../lib/rich";
 import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -7,7 +9,7 @@ import { useAutosave, useLoad, useRows } from "../../lib/hooks";
 import { MeetingRecorder } from "../../lib/recorder";
 import { today } from "../../lib/date";
 import { Attachments } from "../../components/Attachments";
-import { confirmDialog, Empty, Markdown, run, toast } from "../../components/ui";
+import { confirmDialog, Empty, run, toast } from "../../components/ui";
 
 type Seg = { start: number; end: number; text: string };
 
@@ -20,10 +22,11 @@ const ts = (s: number) => {
 };
 
 /** "- [ ] item" lines under the 할 일 heading of a summary. */
-function actionItems(md: string) {
+function actionItems(value: string) {
   const out: string[] = [];
   let inTodo = false;
-  for (const l of md.split("\n")) {
+  // The summary may have been edited into blocks since the AI wrote it.
+  for (const l of richToMarkdown(value).split("\n")) {
     if (/^#{1,4}\s/.test(l)) inTodo = /할 일/.test(l);
     const m = l.match(/^\s*[-*]\s+\[ \]\s+(.*)/);
     if (inTodo && m && m[1].trim()) out.push(m[1].trim());
@@ -118,7 +121,6 @@ export function MeetingPanel({ mid, onDeleted, embedded }: { mid: number; onDele
   const [llm, setLlm] = useState<{ done: number; total: number; stage: string } | null>(null);
   const [title, setTitle] = useAutosave(m?.title ?? "", (v) => db.upsert("meetings", { id: mid, title: v }));
   const [summary, setSummary] = useAutosave(m?.summary_md ?? "", (v) => db.upsert("meetings", { id: mid, summary_md: v }));
-  const [editSummary, setEditSummary] = useState(false);
 
   useEffect(() => {
     const a = listen<{ id: number; progress: number }>("stt-progress", (e) => e.payload.id === mid && setProgress(e.payload.progress));
@@ -142,7 +144,7 @@ export function MeetingPanel({ mid, onDeleted, embedded }: { mid: number; onDele
   // (a project-level note) it becomes a new work record of the project.
   const toWorkLog = async () => {
     if (item) {
-      await db.upsert("work_logs", { id: item.id, body: `${item.body ? `${item.body}\n\n` : ""}${summary}` });
+      await db.upsert("work_logs", { id: item.id, body: appendRich(item.body, summary) });
       toast(`'${item.title || "업무"}' 내용에 요약을 붙였습니다`, "ok");
     } else {
       await db.upsert("work_logs", { date: m.date ?? today(), project_id: m.project_id, kind: "log", title: `회의: ${m.title}`, body: summary });
@@ -202,16 +204,12 @@ export function MeetingPanel({ mid, onDeleted, embedded }: { mid: number; onDele
           <span className="row">
             {items.length > 0 && <button className="btn sm" onClick={toTasks}>할 일 {items.length}개 → 체크리스트</button>}
             {summary && <button className="btn sm" onClick={toWorkLog}>{item ? "업무 내용에 요약 붙이기" : "업무 기록으로 추가"}</button>}
-            <button className="btn sm" onClick={() => setEditSummary(!editSummary)}>{editSummary ? "보기" : "편집"}</button>
           </span>
         </div>
-        {editSummary ? (
-          <textarea style={{ width: "100%", minHeight: 320 }} value={summary} onChange={(e) => setSummary(e.target.value)} />
-        ) : summary ? (
-          <div className="card"><Markdown text={summary} /></div>
-        ) : (
-          <Empty>받아쓰기 후 ‘AI 요약·정리’를 누르면 요약, 결정 사항, 할 일이 정리됩니다</Empty>
-        )}
+        {!summary && <div className="faint small" style={{ marginBottom: 6 }}>받아쓰기 후 ‘AI 요약·정리’를 누르면 요약, 결정 사항, 할 일이 정리됩니다. 직접 적어도 됩니다.</div>}
+        <div className="card">
+          <RichText value={summary} onChange={setSummary} owner={{ table: "meetings", id: mid }} placeholder="회의록을 적거나 AI 요약을 받으세요" />
+        </div>
       </div>
 
       <div className="section">

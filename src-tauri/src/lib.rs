@@ -1,5 +1,6 @@
 mod attachments;
 mod calendar;
+mod chat;
 mod db;
 mod device;
 mod error;
@@ -366,6 +367,7 @@ async fn device_settings(app: AppHandle) -> Result<Value> {
             "env_client": option_env!("SM_GOOGLE_CLIENT_ID").is_some_and(|v| !v.trim().is_empty()),
         },
         "models_size": models::total_size(&app),
+        "total_ram": models::total_ram(),
         "gcal_last_sync": cfg.gcal_last_sync,
         "platform": if cfg!(target_os = "android") { "android" } else { "desktop" },
         "ai_enabled": cfg!(feature = "ai"),
@@ -631,6 +633,54 @@ async fn meeting_summarize(app: AppHandle, id: i64, profile_token: String) -> Re
             Err(e)
         }
     }
+}
+
+// ---------------- Chatbot ----------------
+
+#[tauri::command]
+async fn chat_sessions(app: AppHandle, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    chat::sessions(&app)
+}
+
+#[tauri::command]
+async fn chat_messages(app: AppHandle, session: i64, profile_token: String) -> Result<Value> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    chat::messages(&app, session)
+}
+
+#[tauri::command]
+async fn chat_send(app: AppHandle, session: Option<i64>, text: String, web: bool, profile_token: String) -> Result<Value> {
+    // Held for the whole answer: it reads this profile's records and saves
+    // into its conversations. A profile switch stops the answer first.
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    chat::send(&app, session, text, web).await
+}
+
+/// The 🌐 switch, also for an answer already being made.
+/// Not async: commands like this run one after another in the order they
+/// were sent, so fast clicks end in the state of the last click.
+#[tauri::command]
+fn chat_set_web(on: bool) -> bool {
+    chat::set_web(on);
+    on
+}
+
+#[tauri::command]
+async fn chat_cancel() {
+    chat::cancel();
+}
+
+#[tauri::command]
+async fn chat_rename(app: AppHandle, session: i64, title: String, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    chat::rename(&app, session, &title)
+}
+
+#[tauri::command]
+async fn chat_delete(app: AppHandle, session: i64, profile_token: String) -> Result<()> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    chat::delete(&app, session)
 }
 
 #[tauri::command]
@@ -916,6 +966,13 @@ pub fn run() {
             meeting_import,
             meeting_transcribe,
             meeting_summarize,
+            chat_sessions,
+            chat_messages,
+            chat_send,
+            chat_cancel,
+            chat_set_web,
+            chat_rename,
+            chat_delete,
             meeting_delete,
             meeting_cancel,
             sync_now,

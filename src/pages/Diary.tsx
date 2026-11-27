@@ -5,7 +5,9 @@ import { useAutosave, useLoad, useRows } from "../lib/hooks";
 import { daysBetween, fmtDate, monthGrid } from "../lib/date";
 import { Attachments } from "../components/Attachments";
 import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../components/Period";
-import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, useDebounced } from "../components/ui";
+import { confirmDialog, Empty, PageHeader, SearchBox, useDebounced } from "../components/ui";
+import { RichText, RichOwner } from "../components/RichText";
+import { richPlain } from "../lib/rich";
 
 export type DiaryField = { key: string; label: string; type: "text" | "longtext" | "rating" | "number" | "checkbox" | "select"; options?: string };
 
@@ -17,10 +19,10 @@ export function parseFields(t?: Row | null): DiaryField[] {
   }
 }
 
-function FieldInput({ f, value, onChange }: { f: DiaryField; value: any; onChange: (v: any) => void }) {
+function FieldInput({ f, value, onChange, owner }: { f: DiaryField; value: any; onChange: (v: any) => void; owner?: RichOwner }) {
   switch (f.type) {
     case "longtext":
-      return <AutoText className="boxed" value={value ?? ""} onChange={onChange} minRows={4} />;
+      return <RichText value={value ?? ""} onChange={onChange} owner={owner} />;
     case "rating":
       return (
         <div className="row" style={{ fontSize: 22, gap: 4 }}>
@@ -90,14 +92,14 @@ function Entry({ date, entry, templates }: { date: string; entry: Row | undefine
       {fields.map((f) => (
         <div key={f.key} className="section" style={{ marginTop: 18 }}>
           <div className="field-label" style={{ marginBottom: 6 }}>{f.label}</div>
-          <FieldInput f={f} value={vals[f.key]} onChange={(v) => setVals((p) => ({ ...p, [f.key]: v }))} />
+          <FieldInput f={f} value={vals[f.key]} onChange={(v) => setVals((p) => ({ ...p, [f.key]: v }))} owner={entryId ? { table: "diary_entries", id: entryId } : undefined} />
         </div>
       ))}
       <Attachments ownerTable="diary_entries" ownerId={entryId} ensureOwner={ensureEntry} title="사진·첨부 파일" />
       {orphans.length > 0 && (
         <details className="section">
           <summary className="muted small">다른 템플릿으로 쓴 내용 {orphans.length}개</summary>
-          {orphans.map((k) => <div key={k} className="notice" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}><b>{k}</b>: {String(vals[k])}</div>)}
+          {orphans.map((k) => <div key={k} className="notice" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}><b>{k}</b>: {typeof vals[k] === "string" ? richPlain(vals[k]) : String(vals[k])}</div>)}
         </details>
       )}
     </div>

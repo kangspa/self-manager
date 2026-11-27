@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { richFirstLine } from "../lib/rich";
 import { api, db, Row } from "../lib/api";
 import { useRows } from "../lib/hooks";
 import { addDays, daysBetween, fmtDate, monthGrid, nowLocal, overlaps, today, ymd } from "../lib/date";
 import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../components/Period";
 import { scheduleReminder, cancelReminder } from "../lib/reminders";
-import { AutoText, confirmDialog, Empty, Field, Modal, PageHeader, run, toast } from "../components/ui";
+import { confirmDialog, Empty, Field, Modal, PageHeader, run, toast } from "../components/ui";
+import { RichText } from "../components/RichText";
 import { COLORS } from "./Memos";
 
 const REMIND: [string, string][] = [["", "알림 없음"], ["0", "정시"], ["5", "5분 전"], ["10", "10분 전"], ["30", "30분 전"], ["60", "1시간 전"], ["1440", "하루 전"]];
@@ -61,7 +63,7 @@ function EventEditor({ ev, onClose }: { ev: Partial<Row>; onClose: () => void })
       <Field label="색">
         <div className="colors">{COLORS.map((c) => <span key={c} className={`color-dot ${(d.color ?? "") === c ? "on" : ""}`} style={{ background: c || "var(--accent)" }} onClick={() => set("color", c || null)} />)}</div>
       </Field>
-      <Field label="설명"><AutoText className="boxed" value={d.description ?? ""} onChange={(v) => set("description", v)} minRows={2} /></Field>
+      <Field label="설명"><RichText value={d.description ?? ""} onChange={(v) => set("description", v)} owner={ev.id ? { table: "events", id: ev.id } : undefined} /></Field>
       {ev.gcal_id && <div className="faint small">구글 캘린더와 연결된 일정</div>}
     </Modal>
   );
@@ -87,7 +89,7 @@ function EventRows({ events, day, onOpen }: { events: Row[]; day: string; onOpen
           <div className="grow">
             <b>{e.title}</b>
             {e.location && <span className="faint small"> · {e.location}</span>}
-            {e.description && <div className="faint small ellipsis">{e.description}</div>}
+            {e.description && <div className="faint small ellipsis">{richFirstLine(e.description)}</div>}
           </div>
           {e.remind_minutes != null && <span className="faint small">🔔</span>}
           {e.gcal_id && <span className="badge">Google</span>}

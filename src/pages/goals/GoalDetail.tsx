@@ -4,7 +4,8 @@ import { db, Row } from "../../lib/api";
 import { useAutosave, useLoad, useOptions, useRows } from "../../lib/hooks";
 import { addDays, isoWeek, parseYmd, quarterKey, today, weekRange, ym, ymd } from "../../lib/date";
 import { Attachments } from "../../components/Attachments";
-import { AutoText, confirmDialog, Empty, Field, OptionSelect, Tabs } from "../../components/ui";
+import { confirmDialog, Empty, Field, OptionSelect, Tabs } from "../../components/ui";
+import { RichText } from "../../components/RichText";
 
 type PT = "quarter" | "month" | "week";
 
@@ -69,7 +70,7 @@ function PeriodNote({ goalId, type, pkey, label, note, isCurrent }: { goalId: nu
         <span className="spacer" />
         {open && !body && <button className="btn sm" onClick={(e) => { e.stopPropagation(); setBody(TEMPLATES[type]); }}>템플릿 넣기</button>}
       </div>
-      {open && <AutoText value={body} onChange={setBody} placeholder="이 기간의 계획, 진행, 회고를 적어 보세요" minRows={3} />}
+      {open && <RichText value={body} onChange={setBody} placeholder="이 기간의 계획, 진행, 회고를 적어 보세요" owner={note?.id ? { table: "goal_notes", id: note.id } : undefined} />}
     </div>
   );
 }
@@ -113,7 +114,7 @@ export default function GoalDetail() {
       </Field>
       <div className="section">
         <div className="section-title">상세 내용</div>
-        <AutoText className="boxed" value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder="목표의 배경, 성공 기준, 참고 자료, 포트폴리오로 남길 결과물 등" minRows={5} />
+        <RichText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder="목표의 배경, 성공 기준, 참고 자료, 포트폴리오로 남길 결과물 등" owner={{ table: "goals", id: gid }} />
       </div>
       <Attachments ownerTable="goals" ownerId={gid} title="포트폴리오·첨부 파일" />
       <div className="section">

@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { richPlain } from "../../lib/rich";
 import { db, Row } from "../../lib/api";
 import { useRows } from "../../lib/hooks";
 import { addDays, daysBetween, fmtDate, monthGrid, overlaps, parseYmd, today } from "../../lib/date";
-import { AutoText, Chip, confirmDialog, Empty, Field, Modal, PageHeader, SearchBox, Tabs, useDebounced } from "../../components/ui";
+import { Chip, confirmDialog, Empty, Field, Modal, PageHeader, SearchBox, Tabs, useDebounced } from "../../components/ui";
+import { RichText } from "../../components/RichText";
 import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../../components/Period";
 import { COLORS } from "../Memos";
 import { addAiNote, addItem, AddMenu, AiNote, Kind, KIND, kindOf, STATUSES, WorkItem } from "./WorkItem";
@@ -31,7 +33,7 @@ function ProjectModal({ p, onClose }: { p: Partial<Row>; onClose: () => void }) 
           {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       </Field>
-      <Field label="설명"><AutoText className="boxed" value={d.description ?? ""} onChange={(v) => setD({ ...d, description: v })} minRows={3} /></Field>
+      <Field label="설명"><RichText value={d.description ?? ""} onChange={(v) => setD({ ...d, description: v })} owner={p.id ? { table: "projects", id: p.id } : undefined} /></Field>
       <Field label="색"><div className="colors">{COLORS.map((c) => <span key={c} className={`color-dot ${(d.color ?? "") === c ? "on" : ""}`} style={{ background: c || "var(--bg-hover)" }} onClick={() => setD({ ...d, color: c || null })} />)}</div></Field>
       <label className="row"><input type="checkbox" checked={!!d.archived} onChange={(e) => setD({ ...d, archived: e.target.checked ? 1 : 0 })} /> 보관 (목록에서 숨김)</label>
     </Modal>
@@ -153,7 +155,7 @@ function ByProject({ projects }: { projects: Row[] }) {
               ~
               <input type="date" value={cur.end_date ?? ""} min={cur.start_date ?? undefined} onChange={(e) => db.upsert("projects", { id: cur.id, end_date: e.target.value || null })} />
             </div>
-            {cur.description && <p className="muted" style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{cur.description}</p>}
+            {cur.description && <p className="muted" style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{richPlain(cur.description)}</p>}
             <Capped on={capped} />
             <Timeline project={cur} items={mine} />
             {projectNotes.map((m) => <AiNote key={m.id} m={m} />)}

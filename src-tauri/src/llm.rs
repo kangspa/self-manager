@@ -35,7 +35,7 @@ fn line(s: &Segment) -> String {
 }
 
 /// Removes reasoning blocks some models emit even when asked not to.
-fn strip_thinking(s: &str) -> String {
+pub fn strip_thinking(s: &str) -> String {
     let mut out = s.to_string();
     for (open, close) in [("<think>", "</think>"), ("<|channel>thought", "<channel|>")] {
         while let Some(a) = out.find(open) {
@@ -89,7 +89,7 @@ mod engine {
         pub fn load(path: &Path, threads: i32) -> Result<Self> {
             let be = backend()?;
             let params = LlamaModelParams::default().with_n_gpu_layers(0);
-            let model = LlamaModel::load_from_file(be, path, &params).map_err(|e| Error::msg(format!("요약 모델을 열 수 없습니다: {e}")))?;
+            let model = LlamaModel::load_from_file(be, path, &params).map_err(|e| Error::msg(format!("AI 모델을 열 수 없습니다: {e}")))?;
             let tmpl = model.chat_template(None).ok().and_then(|t| t.to_string().ok()).unwrap_or_default();
             let arch = model.meta_val_str("general.architecture").unwrap_or_default();
             // llama.cpp has no built-in Gemma 4 template, so format it by hand.
@@ -114,83 +114,186 @@ mod engine {
             self.model.vocab().tokenize(text.as_bytes(), false, false).len()
         }
 
-        fn prompt(&self, system: &str, user: &str) -> Result<String> {
+        pub fn n_ctx(&self) -> usize {
+            self.n_ctx as usize
+        }
+
+        /// A conversation as the model's prompt, ending where the model's
+        /// answer starts. `turns` are ("user" | "assistant", text).
+        pub fn chat_prompt(&self, system: &str, turns: &[(&str, &str)]) -> Result<String> {
             Ok(match self.style {
-                Style::Gemma4 => format!("<|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n"),
+                Style::Gemma4 => {
+                    let mut s = format!("<|turn>system\n{system}<turn|>\n");
+                    for (role, text) in turns {
+                        s += &format!("<|turn>{}\n{text}<turn|>\n", if *role == "assistant" { "model" } else { "user" });
+                    }
+                    s + "<|turn>model\n"
+                }
                 // Empty think block = Qwen's documented way to skip reasoning.
-                Style::ChatMl => format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+                Style::ChatMl => {
+                    let mut s = format!("<|im_start|>system\n{system}<|im_end|>\n");
+                    for (role, text) in turns {
+                        s += &format!("<|im_start|>{}\n{text}<|im_end|>\n", if *role == "assistant" { "assistant" } else { "user" });
+                    }
+                    s + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+                }
                 Style::Native => {
                     use llama_cpp_2::model::LlamaChatMessage;
                     let tmpl = self.model.chat_template(None).map_err(|e| Error::msg(format!("채팅 템플릿 없음: {e}")))?;
-                    let msgs = vec![
-                        LlamaChatMessage::new("system".into(), system.into()).map_err(|e| Error::msg(e.to_string()))?,
-                        LlamaChatMessage::new("user".into(), user.into()).map_err(|e| Error::msg(e.to_string()))?,
-                    ];
+                    let mut msgs = vec![LlamaChatMessage::new("system".into(), system.into()).map_err(|e| Error::msg(e.to_string()))?];
+                    for (role, text) in turns {
+                        msgs.push(LlamaChatMessage::new(role.to_string(), text.to_string()).map_err(|e| Error::msg(e.to_string()))?);
+                    }
                     self.model.apply_chat_template(&tmpl, &msgs, true).map_err(|e| Error::msg(e.to_string()))?
                 }
             })
         }
 
-        pub fn generate(&self, system: &str, user: &str, max_new: usize, cancel: &AtomicBool) -> Result<String> {
-            let be = backend()?;
-            let prompt = self.prompt(system, user)?;
-            let vocab = self.model.vocab();
-            let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
-            let max_new = max_new.min(self.n_ctx as usize / 2);
-            if tokens.len() + max_new > self.n_ctx as usize {
-                return Err(Error::msg(format!("입력이 모델 문맥보다 깁니다 ({}토큰)", tokens.len())));
+        /// What follows the model's tool call in its prompt: the call's turn
+        /// closed, the result as the user's turn, the model's next turn opened.
+        /// None when only the model's own template knows (rebuild the prompt).
+        pub fn tool_reply(&self, result: &str) -> Option<String> {
+            match self.style {
+                Style::Gemma4 => Some(format!("<turn|>\n<|turn>user\n{result}<turn|>\n<|turn>model\n")),
+                Style::ChatMl => Some(format!("<|im_end|>\n<|im_start|>user\n{result}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")),
+                Style::Native => None,
             }
+        }
+
+        /// An inference context: feed text, sample text, repeat. What was fed
+        /// and sampled stays in it, so a follow-up costs only the new text.
+        pub fn run(&self) -> Result<Run<'_>> {
             let cp = LlamaContextParams::default()
                 .with_n_ctx(NonZeroU32::new(self.n_ctx))
                 .with_n_batch(512)
                 .with_n_threads(self.threads)
                 .with_n_threads_batch(self.threads);
-            let mut ctx = self.model.new_context(be, cp).map_err(|e| Error::msg(format!("추론 준비 실패: {e}")))?;
-            let mut batch = LlamaBatch::new(512, 1);
-            let mut pos = 0i32;
-            for chunk in tokens.chunks(512) {
-                if cancel.load(Ordering::SeqCst) {
-                    return Err(Error::msg("요약을 취소했습니다"));
-                }
-                batch.clear();
-                for (i, t) in chunk.iter().enumerate() {
-                    let last = pos as usize + i == tokens.len() - 1;
-                    batch.add(*t, pos + i as i32, &[0], last).map_err(|e| Error::msg(e.to_string()))?;
-                }
-                ctx.decode(&mut batch).map_err(|e| Error::msg(format!("추론 실패: {e}")))?;
-                pos += chunk.len() as i32;
-            }
-            let mut sampler = LlamaSampler::chain_simple([
+            let ctx = self.model.new_context(backend()?, cp).map_err(|e| Error::msg(format!("추론 준비 실패: {e}")))?;
+            let sampler = LlamaSampler::chain_simple([
                 LlamaSampler::penalties(self.model.n_vocab(), 256, 1.1, 0.0, 0.0),
                 LlamaSampler::top_k(40),
                 LlamaSampler::top_p(0.9, 1),
                 LlamaSampler::temp(0.3),
                 LlamaSampler::dist(1234),
             ]);
-            let mut out: Vec<u8> = Vec::new();
-            for _ in 0..max_new {
+            Ok(Run { eng: self, ctx, batch: LlamaBatch::new(512, 1), pos: 0, sampler })
+        }
+
+        pub fn generate(&self, system: &str, user: &str, max_new: usize, cancel: &AtomicBool) -> Result<String> {
+            let prompt = self.chat_prompt(system, &[("user", user)])?;
+            let n = self.count(&prompt);
+            let max_new = max_new.min(self.n_ctx as usize / 2);
+            if n + max_new > self.n_ctx as usize {
+                return Err(Error::msg(format!("입력이 모델 문맥보다 깁니다 ({n}토큰)")));
+            }
+            let mut run = self.run()?;
+            let res = run.feed(&prompt, cancel).and_then(|_| run.sample(max_new, &[], false, cancel, |_| {}));
+            match res {
+                Ok(text) => Ok(visible(&text)),
+                Err(_) if cancel.load(Ordering::SeqCst) => Err(Error::msg("요약을 취소했습니다")),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    pub struct Run<'a> {
+        eng: &'a Engine,
+        ctx: llama_cpp_2::context::LlamaContext<'a>,
+        batch: LlamaBatch<'static>,
+        pos: i32,
+        sampler: LlamaSampler,
+    }
+
+    impl Run<'_> {
+        /// Tokens in the context so far.
+        pub fn used(&self) -> usize {
+            self.pos as usize
+        }
+
+        /// Starts over (an empty context).
+        pub fn reset(&mut self) {
+            self.ctx.clear_kv_cache();
+            self.pos = 0;
+        }
+
+        pub fn feed(&mut self, text: &str, cancel: &AtomicBool) -> Result<()> {
+            let tokens = self.eng.model.vocab().tokenize(text.as_bytes(), self.pos == 0, true);
+            if tokens.is_empty() {
+                return Ok(());
+            }
+            if self.pos as usize + tokens.len() + 16 > self.eng.n_ctx as usize {
+                return Err(Error::msg("대화가 모델이 한 번에 읽을 수 있는 길이를 넘었습니다. 새 대화로 시작해 주세요."));
+            }
+            let mut done = 0usize;
+            for chunk in tokens.chunks(512) {
                 if cancel.load(Ordering::SeqCst) {
-                    return Err(Error::msg("요약을 취소했습니다"));
+                    return Err(Error::msg(CANCELLED));
                 }
-                let tok = sampler.sample(&ctx, batch.n_tokens() - 1);
-                sampler.accept(tok);
+                self.batch.clear();
+                for (i, t) in chunk.iter().enumerate() {
+                    let last = done + i == tokens.len() - 1;
+                    self.batch.add(*t, self.pos + i as i32, &[0], last).map_err(|e| Error::msg(e.to_string()))?;
+                }
+                self.ctx.decode(&mut self.batch).map_err(|e| Error::msg(format!("추론 실패: {e}")))?;
+                self.pos += chunk.len() as i32;
+                done += chunk.len();
+            }
+            Ok(())
+        }
+
+        /// Samples the model's text until its turn ends, a `stops` string
+        /// appears (kept in the result), or `max_new` tokens. Every token,
+        /// the stop's too, goes into the context, so feeding can continue.
+        /// `special`: control tokens appear as text (tool-call tags can be
+        /// such tokens). `on_text` gets the whole text so far.
+        pub fn sample(&mut self, max_new: usize, stops: &[&str], special: bool, cancel: &AtomicBool, mut on_text: impl FnMut(&str)) -> Result<String> {
+            let vocab = self.eng.model.vocab();
+            let room = (self.eng.n_ctx as usize).saturating_sub(self.pos as usize + 1);
+            let mut out: Vec<u8> = Vec::new();
+            for _ in 0..max_new.min(room) {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(Error::msg(CANCELLED));
+                }
+                let tok = self.sampler.sample(&self.ctx, self.batch.n_tokens() - 1);
+                self.sampler.accept(tok);
                 if vocab.is_eog(tok) {
                     break;
                 }
-                out.extend(vocab.token_to_piece(tok, false, None));
-                let text = String::from_utf8_lossy(&out);
-                if text.contains("<turn|>") || text.contains("<|im_end|>") {
+                out.extend(vocab.token_to_piece(tok, special, None));
+                self.batch.clear();
+                self.batch.add(tok, self.pos, &[0], true).map_err(|e| Error::msg(e.to_string()))?;
+                self.pos += 1;
+                self.ctx.decode(&mut self.batch).map_err(|e| Error::msg(format!("추론 실패: {e}")))?;
+                // A character can span tokens: show only whole ones.
+                let valid = match std::str::from_utf8(&out) {
+                    Ok(s) => s,
+                    Err(e) => std::str::from_utf8(&out[..e.valid_up_to()]).unwrap_or(""),
+                };
+                on_text(valid);
+                if valid.contains("<turn|>") || valid.contains("<|im_end|>") || stops.iter().any(|s| valid.contains(s)) {
                     break;
                 }
-                batch.clear();
-                batch.add(tok, pos, &[0], true).map_err(|e| Error::msg(e.to_string()))?;
-                pos += 1;
-                ctx.decode(&mut batch).map_err(|e| Error::msg(format!("추론 실패: {e}")))?;
             }
-            let text = String::from_utf8_lossy(&out).replace("<turn|>", "").replace("<|im_end|>", "");
-            Ok(strip_thinking(&text))
+            Ok(String::from_utf8_lossy(&out).into_owned())
         }
     }
+}
+
+#[cfg(feature = "ai")]
+pub use engine::Engine;
+
+/// The error a cancelled run ends with.
+pub const CANCELLED: &str = "취소했습니다";
+
+/// Removes end-of-turn and other control tokens left in sampled text.
+pub fn clean_tokens(s: &str) -> String {
+    let re = regex::Regex::new(r"<\|[A-Za-z_]+\|>|<\|[A-Za-z_]+>|<[A-Za-z_]+\|>").unwrap();
+    re.replace_all(s, "").into_owned()
+}
+
+/// What the reader should see of sampled text: no reasoning, no control tokens.
+pub fn visible(s: &str) -> String {
+    clean_tokens(&strip_thinking(s))
 }
 
 /// Splits transcript lines into windows of at most `budget` tokens.

@@ -92,6 +92,44 @@ pub struct ModelInfo {
     /// Bytes already downloaded into a .part file (resumable).
     pub partial: u64,
     pub downloading: bool,
+    /// Estimated memory while the model runs (bytes); see `estimate_ram`.
+    pub ram: u64,
+}
+
+const MB: u64 = 1024 * 1024;
+
+/// Memory a model needs while it runs - an estimate, not a measurement.
+/// Whisper: the figures whisper.cpp publishes per model size (weights plus
+/// its compute buffers), else about 1.6 x the file. LLM: the weights (the
+/// file), the attention cache for the context this app opens (up to 8k
+/// tokens, about a quarter of the weights for these small models) and about
+/// 0.5 GB of compute buffers.
+pub fn estimate_ram(kind: Kind, file: &str, size: u64) -> u64 {
+    match kind {
+        Kind::Stt => {
+            let f = file.to_ascii_lowercase();
+            let table: &[(&str, u64)] = &[("tiny", 273), ("base", 388), ("small", 852), ("medium", 2100)];
+            if let Some((_, mb)) = table.iter().find(|(k, _)| f.contains(k)) {
+                return mb * MB;
+            }
+            if f.contains("large") && !f.contains("q5") && !f.contains("q8") && !f.contains("q4") {
+                return 3900 * MB;
+            }
+            size + size * 6 / 10 + 200 * MB
+        }
+        Kind::Llm => size + size / 4 + 512 * MB,
+    }
+}
+
+/// Total memory of this device, for comparing with the estimates.
+pub fn total_ram() -> u64 {
+    // 0 when it cannot be read (the screen then shows no comparison).
+    sysinfo::System::new()
+        .map(|mut s| {
+            let _ = s.refresh_memory();
+            s.total_memory()
+        })
+        .unwrap_or(0)
 }
 
 pub fn list(app: &AppHandle) -> Vec<ModelInfo> {
@@ -112,6 +150,7 @@ pub fn list(app: &AppHandle) -> Vec<ModelInfo> {
                 preset: true,
                 partial,
                 downloading: dl.contains(&p.file.to_string()),
+                ram: estimate_ram(kind, p.file, p.size),
             });
         }
         // Files the user added by URL or import.
@@ -121,11 +160,13 @@ pub fn list(app: &AppHandle) -> Vec<ModelInfo> {
                 if !kind.ext_ok(&name) || PRESETS.iter().any(|p| p.file == name) {
                     continue;
                 }
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
                 out.push(ModelInfo {
                     kind,
                     label: name.trim_end_matches(".gguf").trim_end_matches(".bin").to_string(),
                     note: "직접 추가한 모델".into(),
-                    size: e.metadata().map(|m| m.len()).unwrap_or(0),
+                    size,
+                    ram: estimate_ram(kind, &name, size),
                     file: name,
                     installed: true,
                     preset: false,
@@ -254,4 +295,19 @@ pub fn total_size(app: &AppHandle) -> u64 {
         std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| if e.path().is_dir() { walk(&e.path()) } else { e.metadata().map(|m| m.len()).unwrap_or(0) }).sum()).unwrap_or(0)
     }
     walk(&app.state::<AppState>().data_dir.join("models"))
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+
+    #[test]
+    fn estimates_follow_the_model() {
+        assert_eq!(estimate_ram(Kind::Stt, "ggml-small.bin", 487_601_967), 852 * MB);
+        assert_eq!(estimate_ram(Kind::Stt, "ggml-base.bin", 147_951_465), 388 * MB);
+        // A quantized large model is far smaller than the f16 one.
+        assert!(estimate_ram(Kind::Stt, "ggml-large-v3-turbo-q5_0.bin", 574_041_195) < 1500 * MB);
+        let llm = estimate_ram(Kind::Llm, "Qwen3.5-2B-Q4_K_M.gguf", 1_280_835_840);
+        assert!(llm > 1_280_835_840 && llm < 2_500 * MB);
+    }
 }

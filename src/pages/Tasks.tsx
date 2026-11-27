@@ -3,7 +3,9 @@ import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
 import { daysUntil } from "../lib/date";
 import { Attachments } from "../components/Attachments";
-import { AutoText, confirmDialog, Empty, PageHeader, SearchBox, Tabs, toast, useDebounced } from "../components/ui";
+import { confirmDialog, Empty, PageHeader, SearchBox, Tabs, toast, useDebounced } from "../components/ui";
+import { RichText } from "../components/RichText";
+import { richFirstLine } from "../lib/rich";
 
 /** "11/22" from a created_at timestamp. */
 const created = (ms: number) => {
@@ -25,7 +27,7 @@ function TaskMemo({ task, focusTitle }: { task: Row; focusTitle?: boolean }) {
   return (
     <div className="task-memo" onClick={(e) => e.stopPropagation()}>
       <input className="bare task-title-edit" value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} placeholder="할 일" autoFocus={focusTitle} />
-      <AutoText value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="메모를 적어 두세요" minRows={2} autoFocus={!focusTitle} />
+      <RichText value={d.note} onChange={(v) => setD((x) => ({ ...x, note: v }))} placeholder="메모를 적어 두세요" autoFocus={!focusTitle} owner={{ table: "tasks", id: task.id }} />
       <div className="row">
         <label className="row small muted">
           마감일
@@ -141,7 +143,7 @@ export default function Tasks() {
                   <input type="checkbox" checked={done} aria-label="완료" onClick={(e) => e.stopPropagation()} onChange={() => db.upsert("tasks", { id: t.id, done_at: done ? null : Date.now() })} />
                   <div className="task-main">
                     <span className={done ? "done-text" : ""}>{t.title || <span className="faint">제목 없음</span>}</span>
-                    {t.note && !opened && <span className="faint small ellipsis task-note">📝 {t.note.split("\n")[0]}</span>}
+                    {t.note && !opened && <span className="faint small ellipsis task-note">📝 {richFirstLine(t.note)}</span>}
                   </div>
                   <span className="task-date" data-label="생성">{created(t.created_at)}</span>
                   <span className="task-date" data-label="마감"><Due due={t.due_at} done={done} /></span>

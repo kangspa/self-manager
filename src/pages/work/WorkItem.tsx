@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { richToMarkdown } from "../../lib/rich";
 import { useNavigate } from "react-router-dom";
 import { api, db, Row } from "../../lib/api";
 import { useAutosave } from "../../lib/hooks";
 import { fmtDate, today } from "../../lib/date";
 import { Attachments } from "../../components/Attachments";
-import { AutoText, confirmDialog } from "../../components/ui";
+import { confirmDialog } from "../../components/ui";
+import { RichText } from "../../components/RichText";
 import { MEETING_STATUS, MeetingPanel } from "./MeetingDetail";
 
 export type Kind = "phase" | "schedule" | "log";
@@ -85,7 +87,7 @@ export function AddMenu({ label = "+ 추가", kinds, onPick }: { label?: string;
 export function AiNote({ m }: { m: Row }) {
   const [open, setOpen] = useState(false);
   const nav = useNavigate();
-  const preview = (m.summary_md ?? "").replace(/^#+\s.*$/gm, "").replace(/[-*]\s+(\[.\]\s+)?/g, "").split("\n").map((s: string) => s.trim()).filter(Boolean)[0];
+  const preview = richToMarkdown(m.summary_md).replace(/^#+\s.*$/gm, "").replace(/[-*]\s+(\[.\]\s+)?/g, "").split("\n").map((s: string) => s.trim()).filter(Boolean)[0];
   return (
     <div className={`ai-note ${open ? "open" : ""}`}>
       <div className="ai-note-head click" onClick={() => setOpen(!open)}>
@@ -192,7 +194,7 @@ export function WorkItem({ item, projects, phases, notes, children, showProject,
             <span className="spacer" />
             <button className="icon-btn" aria-label="삭제" onClick={async () => (await confirmDialog(kids.length || myNotes.length ? "이 항목을 삭제할까요? 안에 있던 항목과 AI 노트는 한 단계 위로 옮겨집니다." : "이 항목을 삭제할까요?", true)) && db.remove("work_logs", item.id)}>🗑</button>
           </div>
-          <AutoText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder={kind === "phase" ? "이 단계의 목표, 범위…" : "한 일, 이슈, 다음 할 일…"} minRows={2} />
+          <RichText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder={kind === "phase" ? "이 단계의 목표, 범위…" : "한 일, 이슈, 다음 할 일…"} owner={{ table: "work_logs", id: item.id }} />
           <input className="bare small" style={{ width: "100%", color: "var(--text-soft)" }} placeholder="#태그 (쉼표로 구분)" value={d.tags} onChange={(e) => setD((x) => ({ ...x, tags: e.target.value }))} />
           {myNotes.map((m) => <AiNote key={m.id} m={m} />)}
           {kind === "phase" && (

@@ -19,6 +19,8 @@ pub struct GoogleConfig {
     pub access_token: Option<String>,
     pub expires_at: i64,
     pub email: Option<String>,
+    /// The account's profile picture (shown in the account menu).
+    pub picture: Option<String>,
     /// Android: whether the user completed the authorization flow once.
     pub authorized: bool,
     /// Bumped by every login. Work that began in one session changes the

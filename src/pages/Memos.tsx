@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { richFirstLine, richPlain } from "../lib/rich";
 import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
 import { relTs } from "../lib/date";
 import { Attachments } from "../components/Attachments";
-import { AutoText, confirmDialog, Empty, Modal, PageHeader, SearchBox, useDebounced } from "../components/ui";
+import { confirmDialog, Empty, Modal, PageHeader, SearchBox, useDebounced } from "../components/ui";
+import { RichText } from "../components/RichText";
 
 export const COLORS = ["", "#f56c6c", "#f5a623", "#f2d024", "#3bb273", "#4b8bf5", "#b06cf5"];
 
@@ -43,7 +45,7 @@ function MemoEditor({ memo, onClose }: { memo: Row; onClose: () => void }) {
       }
     >
       <input className="title-input" style={{ fontSize: 20 }} placeholder="제목" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} />
-      <AutoText value={draft.body} onChange={(v) => setDraft((d) => ({ ...d, body: v }))} placeholder="내용을 입력하세요" minRows={8} autoFocus />
+      <RichText value={draft.body} onChange={(v) => setDraft((d) => ({ ...d, body: v }))} placeholder="내용을 입력하세요" autoFocus owner={{ table: "memos", id: memo.id }} />
       <Attachments ownerTable="memos" ownerId={memo.id} />
     </Modal>
   );
@@ -78,11 +80,11 @@ export default function Memos() {
           {rows.map((m) => (
             <div key={m.id} className="memo-card" style={{ ["--mc" as any]: m.color || "transparent" }} onClick={() => setOpenId(m.id)}>
               <div className="row nowrap">
-                <b className="ellipsis grow">{m.title || (m.body ?? "").split("\n")[0] || "제목 없음"}</b>
+                <b className="ellipsis grow">{m.title || richFirstLine(m.body) || "제목 없음"}</b>
                 {m.pinned ? <span>📌</span> : null}
               </div>
-              {m.title && <div className="memo-body">{m.body}</div>}
-              {!m.title && <div className="memo-body">{(m.body ?? "").split("\n").slice(1).join("\n")}</div>}
+              {m.title && <div className="memo-body">{richPlain(m.body)}</div>}
+              {!m.title && <div className="memo-body">{richPlain(m.body).split("\n").filter((l) => l.trim()).slice(1).join("\n")}</div>}
               <div className="faint small" style={{ marginTop: "auto" }}>{relTs(m.updated_at)}</div>
             </div>
           ))}

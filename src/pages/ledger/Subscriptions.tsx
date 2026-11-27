@@ -2,7 +2,8 @@ import { useState } from "react";
 import { api, db, Row } from "../../lib/api";
 import { useLoad, useRows } from "../../lib/hooks";
 import { addDays, daysUntil, fmtDate, monthRange, today, WEEKDAYS, won } from "../../lib/date";
-import { AutoText, confirmDialog, Empty, Field, Modal, OptionChip, OptionSelect, run } from "../../components/ui";
+import { confirmDialog, Empty, Field, Modal, OptionChip, OptionSelect, run } from "../../components/ui";
+import { RichText } from "../../components/RichText";
 import { useLedgerOptions } from "./Expenses";
 
 const CYCLES: [string, string][] = [["monthly", "매월"], ["yearly", "매년"], ["weekly", "매주"]];
@@ -64,7 +65,7 @@ function SubEditor({ row, onClose }: { row: Partial<Row>; onClose: () => void })
         <Field label="종료일 (선택)"><input type="date" value={d.end_date ?? ""} onChange={(e) => set("end_date", e.target.value || null)} /></Field>
       </div>
       <Field label="URL"><input type="url" value={d.url ?? ""} onChange={(e) => set("url", e.target.value)} /></Field>
-      <Field label="메모"><AutoText className="boxed" value={d.memo ?? ""} onChange={(v) => set("memo", v)} minRows={2} /></Field>
+      <Field label="메모"><RichText value={d.memo ?? ""} onChange={(v) => set("memo", v)} owner={row.id ? { table: "subscriptions", id: row.id } : undefined} /></Field>
       <label className="row"><input type="checkbox" checked={!!d.active} onChange={(e) => set("active", e.target.checked ? 1 : 0)} /> 사용 중</label>
     </Modal>
   );

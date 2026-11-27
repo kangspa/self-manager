@@ -25,7 +25,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream", "charset", "http2"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "fs"] }
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -39,6 +39,7 @@ urlencoding = "2"
 futures-util = "0.3"
 llama-cpp-2 = { version = "=0.1.161", default-features = false, features = ["android-shared-stdcxx"], optional = true }
 whisper-lite = { path = "crates/whisper-lite", optional = true }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 
 # One app per PC: a second launch (e.g. the portable exe next to the installed
 # one) would otherwise write the same database at the same time.
