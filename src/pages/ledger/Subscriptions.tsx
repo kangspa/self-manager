@@ -86,7 +86,7 @@ export default function Subscriptions() {
 
   const record = (s: any) =>
     run(
-      () => db.upsert("expenses", { name: s.name, amount: s.amount, purchased_at: s.date, paid_at: s.date, item_id: s.item_id, location_id: s.location_id, status_id: o.status[0]?.id ?? null, subscription_id: s.subscription_id, source: "subscription" }),
+      () => db.upsert("expenses", { name: s.name, amount: s.amount, purchased_at: s.date, item_id: s.item_id, location_id: s.location_id, status_id: o.status[0]?.id ?? null, subscription_id: s.subscription_id, source: "subscription" }),
       "지출 내역에 기록했습니다",
     );
 

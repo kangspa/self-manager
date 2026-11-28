@@ -178,7 +178,6 @@ pub fn ingest(tx: &Connection, items: &[RawNotification]) -> Result<usize> {
                 e.insert("name".into(), json!(p.name));
                 e.insert("amount".into(), json!(p.amount));
                 e.insert("purchased_at".into(), json!(p.purchased_at));
-                e.insert("paid_at".into(), json!(p.purchased_at));
                 e.insert("location_id".into(), json!(location_id));
                 e.insert("status_id".into(), json!(status));
                 e.insert("source".into(), json!("notification"));

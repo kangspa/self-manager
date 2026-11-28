@@ -12,7 +12,10 @@ export function useLedgerOptions() {
 
 /** Which day an expense counts on: when it was bought, or when the money leaves. */
 export type Basis = "purchase" | "paid";
-export const basisCol = (b: Basis) => (b === "paid" ? "paid_at" : "purchased_at");
+/** `paid_day` = the withdrawal day, or the purchase day when none is set apart. */
+export const basisCol = (b: Basis) => (b === "paid" ? "paid_day" : "purchased_at");
+/** An empty withdrawal day means the purchase day. */
+const paidDay = (r: Partial<Row>) => (r.paid_at || r.purchased_at || "").slice(0, 10);
 
 /** Remembered per device, shared by the list and the dashboard. */
 export function useBasis() {
@@ -56,17 +59,14 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
   const save = async () => {
     if (isNew) {
       const bought = d.purchased_at || today();
-      await db.upsert("expenses", { source: "manual", ...d, amount: Number(d.amount) || 0, purchased_at: bought, paid_at: d.paid_at || bought });
+      await db.upsert("expenses", { source: "manual", ...d, amount: Number(d.amount) || 0, purchased_at: bought });
     } else flush();
     onClose();
   };
-  // The withdrawal day moves with the purchase day until it is set apart.
-  const setBought = (v: string) =>
-    setD((x) => {
-      const was = (x.purchased_at ?? "").slice(0, 10);
-      const follow = !x.paid_at || x.paid_at.slice(0, 10) === was;
-      return { ...x, purchased_at: v, ...(follow ? { paid_at: v } : {}) };
-    });
+  // An empty withdrawal day follows the purchase day; one set apart stays put
+  // (setting it back to the purchase day empties it again).
+  const setBought = (v: string) => setD((x) => ({ ...x, purchased_at: v, paid_at: x.paid_at && x.paid_at.slice(0, 10) !== v ? x.paid_at : null }));
+  const setPaid = (v: string) => setD((x) => ({ ...x, paid_at: v === (x.purchased_at ?? "").slice(0, 10) ? null : v }));
   return (
     <Modal
       open
@@ -93,7 +93,7 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
           <input type="date" value={(d.purchased_at ?? "").slice(0, 10)} onChange={(e) => e.target.value && setBought(e.target.value)} />
         </Field>
         <Field label="출금 날짜">
-          <input type="date" value={(d.paid_at ?? d.purchased_at ?? "").slice(0, 10)} onChange={(e) => e.target.value && set("paid_at", e.target.value)} />
+          <input type="date" value={paidDay(d)} onChange={(e) => e.target.value && setPaid(e.target.value)} />
         </Field>
         <Field label="결제 위치">
           <OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} setKey="expense.location" />
@@ -161,7 +161,7 @@ export default function Expenses() {
         <button className="icon-btn" onClick={() => shift(1)}>›</button>
         <SearchBox value={q} onChange={setQ} placeholder="전체 기간 검색" />
         <span className="spacer" />
-        <button className="btn primary" onClick={() => setEdit({ purchased_at: today(), paid_at: today(), status_id: o.status[0]?.id ?? null })}>+ 지출 추가</button>
+        <button className="btn primary" onClick={() => setEdit({ purchased_at: today(), status_id: o.status[0]?.id ?? null })}>+ 지출 추가</button>
       </div>
       <div className="row" style={{ marginBottom: 12 }}>
         <div style={{ width: 150 }}><OptionSelect options={o.loc} value={fLoc} onChange={setFLoc} placeholder="결제 위치 전체" /></div>
@@ -190,9 +190,9 @@ export default function Expenses() {
               {rows.map((r) => (
                 <tr key={r.id} className="click" onClick={() => setEdit(r)}>
                   <td className="meta">
-                    {md(r[col] ?? r.purchased_at)}
+                    {md(basis === "paid" ? paidDay(r) : r.purchased_at)}
                     {/* The other day, when the two differ (card bills, sponsorships). */}
-                    {r.paid_at && r.purchased_at && r.paid_at.slice(0, 10) !== r.purchased_at.slice(0, 10) && (
+                    {r.paid_at && (
                       <div className="faint small">{basis === "paid" ? `구매 ${md(r.purchased_at)}` : `출금 ${md(r.paid_at)}`}</div>
                     )}
                   </td>

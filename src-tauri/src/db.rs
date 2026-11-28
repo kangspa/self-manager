@@ -102,18 +102,26 @@ fn open_live(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Expense days are 'YYYY-MM-DD', and every expense has a withdrawal day (the
-/// purchase day unless set apart). Rows written by an app from before the
-/// withdrawal day - into a file that already has the column, or through a
-/// merge - are fixed here. Fixed rows get a new `updated_at`, as in
-/// [`normalize_work_all`].
+/// Expense days are 'YYYY-MM-DD', and the withdrawal day is kept only when it
+/// differs from the purchase day (empty = the purchase day). Rows written some
+/// other way (an older app, a restored file) are fixed here; fixed rows get a
+/// new `updated_at`, as in [`normalize_work_all`].
 pub fn normalize_expenses_all(conn: &Connection) -> Result<usize> {
-    Ok(conn.execute(
-        "UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10),
-             paid_at = substr(COALESCE(paid_at, purchased_at), 1, 10), updated_at = ?1
-         WHERE length(purchased_at) > 10 OR (paid_at IS NULL AND purchased_at IS NOT NULL) OR length(paid_at) > 10",
-        [now_ms()],
-    )?)
+    Ok(conn.execute(&format!("UPDATE expenses SET {EXPENSE_DAYS}, updated_at = ?1 WHERE {EXPENSE_DAYS_OFF}"), [now_ms()])?)
+}
+
+const EXPENSE_DAYS: &str = "purchased_at = substr(purchased_at, 1, 10),
+    paid_at = CASE WHEN substr(paid_at, 1, 10) = substr(purchased_at, 1, 10) THEN NULL ELSE substr(paid_at, 1, 10) END";
+const EXPENSE_DAYS_OFF: &str = "(length(purchased_at) > 10 OR length(paid_at) > 10 OR substr(paid_at, 1, 10) = substr(purchased_at, 1, 10))";
+
+/// SQL for a column in a filter or an order. `paid_day` on expenses is the day
+/// the money leaves: the withdrawal day, or the purchase day when none is set.
+fn col_sql(t: &TableDef, c: &str) -> Result<String> {
+    if t.name == "expenses" && c == "paid_day" {
+        return Ok("COALESCE(paid_at, purchased_at)".into());
+    }
+    check_col(t, c)?;
+    Ok(c.to_string())
 }
 
 /// Moves a work item to another project with everything it holds - a phase's
@@ -629,18 +637,18 @@ pub fn list(conn: &Connection, table: &str, q: &ListQuery) -> Result<Vec<Value>>
     let mut params: Vec<SqlValue> = Vec::new();
     let mut wheres: Vec<String> = Vec::new();
     for f in &q.filters {
-        check_col(t, &f.col)?;
+        let col = col_sql(t, &f.col)?;
         let clause = match f.op.as_str() {
             "=" | "!=" | "<" | "<=" | ">" | ">=" => {
                 params.push(to_sql(&f.value));
-                format!("{} {} ?", f.col, f.op)
+                format!("{col} {} ?", f.op)
             }
             "like" => {
                 params.push(to_sql(&f.value));
-                format!("{} LIKE ?", f.col)
+                format!("{col} LIKE ?")
             }
-            "null" => format!("{} IS NULL", f.col),
-            "notnull" => format!("{} IS NOT NULL", f.col),
+            "null" => format!("{col} IS NULL"),
+            "notnull" => format!("{col} IS NOT NULL"),
             "in" => {
                 let arr = f.value.as_array().cloned().unwrap_or_default();
                 if arr.is_empty() {
@@ -648,7 +656,7 @@ pub fn list(conn: &Connection, table: &str, q: &ListQuery) -> Result<Vec<Value>>
                 } else {
                     let marks = vec!["?"; arr.len()].join(",");
                     params.extend(arr.iter().map(to_sql));
-                    format!("{} IN ({marks})", f.col)
+                    format!("{col} IN ({marks})")
                 }
             }
             op => return Err(Error::msg(format!("bad operator {op}"))),
@@ -672,7 +680,7 @@ pub fn list(conn: &Connection, table: &str, q: &ListQuery) -> Result<Vec<Value>>
     if !q.order.is_empty() {
         let mut parts = Vec::new();
         for (c, d) in &q.order {
-            check_col(t, c)?;
+            let c = col_sql(t, c)?;
             let dir = if d.eq_ignore_ascii_case("desc") { "DESC" } else { "ASC" };
             parts.push(format!("{c} {dir}"));
         }
@@ -737,14 +745,9 @@ pub fn upsert(conn: &Connection, table: &str, row: &Map<String, Value>) -> Resul
         normalize_work_tree(conn, row_id)?;
     }
     if t.name == "expenses" {
-        // Dates only, and a withdrawal day for every writer (notifications,
-        // subscriptions, the assistant): the purchase day unless set apart.
-        conn.execute(
-            "UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10),
-                 paid_at = substr(COALESCE(paid_at, purchased_at), 1, 10)
-             WHERE id = ?1 AND (length(purchased_at) > 10 OR paid_at IS NULL OR length(paid_at) > 10)",
-            [row_id],
-        )?;
+        // Dates only, whoever writes (notifications, subscriptions, the
+        // assistant), and a withdrawal day only when it is set apart.
+        conn.execute(&format!("UPDATE expenses SET {EXPENSE_DAYS} WHERE id = ?1 AND {EXPENSE_DAYS_OFF}"), [row_id])?;
     }
     get(conn, table, row_id)?.ok_or_else(|| Error::msg("row vanished"))
 }
@@ -853,7 +856,11 @@ mod tests {
         drop(c);
         let db = Db::open(path).unwrap();
         let r = db.with(|c| get(c, "expenses", 7)).unwrap().unwrap();
-        assert_eq!((r["purchased_at"].as_str(), r["paid_at"].as_str()), (Some("2026-11-20"), Some("2026-11-20")));
+        assert_eq!(r["purchased_at"], "2026-11-20");
+        assert!(r["paid_at"].is_null());
+        // Listed by the day the money leaves, which is the purchase day here.
+        let q = ListQuery { filters: vec![Filter { col: "paid_day".into(), op: ">=".into(), value: serde_json::json!("2026-11-20") }], ..Default::default() };
+        assert_eq!(db.with(|c| list(c, "expenses", &q)).unwrap().len(), 1);
     }
 
     #[test]
@@ -864,7 +871,7 @@ mod tests {
         // A writer that still sends a time and no withdrawal day.
         let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"name": "카드", "amount": 1000, "purchased_at": "2026-11-28 14:30"})))).unwrap();
         assert_eq!(e["purchased_at"], "2026-11-28");
-        assert_eq!(e["paid_at"], "2026-11-28");
+        assert!(e["paid_at"].is_null(), "the same day is kept as empty");
         let id = e["id"].as_i64().unwrap();
         // Set apart, it stays apart when the purchase day changes.
         db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "paid_at": "2026-12-15"})))).unwrap();

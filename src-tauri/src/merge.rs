@@ -59,9 +59,10 @@ fn load(conn: &Connection, table: &str, cols: Option<&[String]>) -> Result<Table
 }
 
 /// Applies the expense day rules of [`db::normalize_expenses_all`] to loaded
-/// rows. Done to the base, local and remote copies alike before comparing, so a
-/// value one device filled in by itself never counts as an edit - and never
-/// conflicts with a withdrawal day someone set on another device.
+/// rows (days only; a withdrawal day equal to the purchase day is empty). Done
+/// to the base, local and remote copies alike before comparing, so copies
+/// written by different app versions compare by meaning: a repair, or a
+/// withdrawal day that only followed the purchase day, is never an edit.
 fn normalize_expense_rows(t: &mut Table) {
     let (Some(p), Some(w)) = (t.cols.iter().position(|c| c == "purchased_at"), t.cols.iter().position(|c| c == "paid_at")) else {
         return;
@@ -72,32 +73,8 @@ fn normalize_expense_rows(t: &mut Table) {
     };
     for row in t.rows.values_mut() {
         row[p] = day(&row[p]);
-        row[w] = if row[w] == Value::Null { row[p].clone() } else { day(&row[w]) };
-    }
-}
-
-/// A withdrawal day that only followed the purchase day (it matched it before
-/// and still does) is not an edit of its own: when the other side set the
-/// withdrawal day, that one wins instead of conflicting. Run after
-/// [`normalize_expense_rows`].
-fn yield_followed_paid(b: &Table, l: &mut Table, r: &mut Table) {
-    let (Some(p), Some(w)) = (b.cols.iter().position(|c| c == "purchased_at"), b.cols.iter().position(|c| c == "paid_at")) else {
-        return;
-    };
-    for (id, base) in &b.rows {
-        if base[w] != base[p] {
-            continue;
-        }
-        let (Some(lr), Some(rr)) = (l.rows.get_mut(id), r.rows.get_mut(id)) else {
-            continue;
-        };
-        let followed = |x: &Row| x[w] == x[p] && x[w] != base[w];
-        let set = |x: &Row| x[w] != base[w] && x[w] != x[p];
-        if followed(lr) && set(rr) {
-            lr[w] = base[w].clone();
-        } else if followed(rr) && set(lr) {
-            rr[w] = base[w].clone();
-        }
+        let paid = day(&row[w]);
+        row[w] = if paid == row[p] { Value::Null } else { paid };
     }
 }
 
@@ -265,7 +242,6 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
             for x in [&mut b, &mut l, &mut r] {
                 normalize_expense_rows(x);
             }
-            yield_followed_paid(&b, &mut l, &mut r);
         }
         let (mut rows, c) = merge_table(&l.cols, &b, &l, &r, prefer.unwrap_or(Prefer::Local), &mut rep);
         conflicts += c + dedupe(t.name, &l.cols, &mut rows, prefer.unwrap_or(Prefer::Local));
@@ -361,6 +337,26 @@ mod tests {
         let c = Connection::open(d.join("out.db")).unwrap();
         let got: (String, String) = c.query_row("SELECT purchased_at, paid_at FROM expenses WHERE id=9", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(got, ("2026-11-20".to_string(), "2026-12-15".to_string()));
+    }
+
+    /// A withdrawal day set on both sides to different days is a real conflict,
+    /// never silently decided.
+    #[test]
+    fn two_set_withdrawal_days_conflict() {
+        let d = dir("paid2");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let id = up(&base, "expenses", json!({"name": "card", "amount": 1, "purchased_at": "2026-11-20"}));
+        for f in ["b.db", "phone.db", "pc.db"] {
+            base.snapshot_to(&d.join(f)).unwrap();
+        }
+        let phone = Db::open(d.join("phone.db")).unwrap();
+        let pc = Db::open(d.join("pc.db")).unwrap();
+        up(&phone, "expenses", json!({"id": id, "purchased_at": "2026-11-22", "paid_at": "2026-12-01"}));
+        up(&pc, "expenses", json!({"id": id, "paid_at": "2026-12-15"}));
+        phone.snapshot_to(&d.join("l.db")).unwrap();
+        pc.snapshot_to(&d.join("r.db")).unwrap();
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert_eq!(rep.conflicts, 1);
     }
 
     /// One device moves the purchase day (the withdrawal day follows), the other

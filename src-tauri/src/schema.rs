@@ -219,6 +219,12 @@ UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10) WHERE length(purc
 UPDATE expenses SET paid_at = purchased_at;
 CREATE INDEX idx_expenses_paid ON expenses(paid_at);
 "#,
+    r#"
+-- A withdrawal day is stored only when it differs from the purchase day; empty
+-- means "the purchase day". Moving the purchase day then never edits it, so
+-- sync can't mistake that for a withdrawal-day change.
+UPDATE expenses SET paid_at = NULL WHERE paid_at = purchased_at;
+"#,
 ];
 
 /// Default selectable values and templates inserted into a brand-new database.

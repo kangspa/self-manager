@@ -55,7 +55,7 @@ export default function Inbox() {
     const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
     setEdit({
       inbox: n,
-      row: { name: n.title, purchased_at: day, paid_at: day, location_id: app?.location_id ?? null, status_id: o.status[0]?.id ?? null, raw_text: `${n.title}\n${n.text}`, source: "notification" },
+      row: { name: n.title, purchased_at: day, location_id: app?.location_id ?? null, status_id: o.status[0]?.id ?? null, raw_text: `${n.title}\n${n.text}`, source: "notification" },
     });
   };
 
