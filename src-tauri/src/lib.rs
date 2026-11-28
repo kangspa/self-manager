@@ -126,7 +126,7 @@ fn before_switch(app: &AppHandle) {
 async fn profile_switch(app: AppHandle, id: String) -> Result<()> {
     before_switch(&app);
     if profiles::active_id(&app) != id {
-        backup_before_leaving(&app).await;
+        backup_before_leaving(&app).await?;
     }
     profiles::switch(&app, &id).await?;
     after_switch(&app);
@@ -136,7 +136,7 @@ async fn profile_switch(app: AppHandle, id: String) -> Result<()> {
 #[tauri::command]
 async fn profile_add(app: AppHandle) -> Result<String> {
     before_switch(&app);
-    backup_before_leaving(&app).await;
+    backup_before_leaving(&app).await?;
     let id = profiles::add(&app).await?;
     after_switch(&app);
     Ok(id)
@@ -861,27 +861,36 @@ fn spawn_auto_load(app: &AppHandle) {
 /// (auto backup on), or they would wait until the next time that profile is
 /// opened. Bounded: offline or slow, the switch goes ahead and the edits stay
 /// on this device for the next backup.
-async fn backup_before_leaving(app: &AppHandle) {
+async fn backup_before_leaving(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
     let cfg = state.device.get();
-    if !(cfg.auto_backup && sync::logged_in(app) && cfg.synced_local_modified != state.db.last_modified().ok()) {
-        return;
+    if !(cfg.auto_backup && sync::logged_in(app)) {
+        return Ok(());
+    }
+    // A file sync moving files right now: its files must not be left behind
+    // half way (and the switch would be refused once it holds the profile).
+    if state.file_sync.busy() {
+        return Err(Error::msg("첨부 파일을 드라이브와 주고받는 중입니다. 끝난 뒤 다시 계정을 바꿔 주세요."));
+    }
+    if cfg.synced_local_modified == state.db.last_modified().ok() {
+        return Ok(());
     }
     let _ = app.emit("switch-backup", ());
     match tokio::time::timeout(std::time::Duration::from_secs(20), sync::backup_db(app)).await {
         Ok(Ok(true)) => {}
-        Ok(Ok(false)) => return,
-        Ok(Err(e)) => return eprintln!("backup before switch: {e}"),
-        Err(_) => return eprintln!("backup before switch: timed out"),
+        Ok(Ok(false)) => return Ok(()),
+        Ok(Err(e)) => return Ok(eprintln!("backup before switch: {e}")),
+        Err(_) => return Ok(eprintln!("backup before switch: timed out")),
     }
     // The profile's new files: nothing uploads them once it is no longer in
     // use, so the switch waits for them (a failed file is retried when the
     // profile is used again; the limit only guards against a stuck network).
-    match tokio::time::timeout(std::time::Duration::from_secs(30 * 60), attachments::upload_files(app)).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(30 * 60), attachments::upload_files_before_exit(app)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => eprintln!("files before switch: {e}"),
         Err(_) => eprintln!("files before switch: timed out"),
     }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -975,13 +984,18 @@ pub fn run() {
                     // The window is gone already: large files get time to finish,
                     // and a file sync already running is let finish before exit.
                     let r = tokio::time::timeout(std::time::Duration::from_secs(30 * 60), async {
-                        let backed = sync::auto_backup(&app).await;
-                        if app.state::<AppState>().device.get().auto_backup && sync::logged_in(&app) {
-                            if let Err(e) = attachments::upload_files_before_exit(&app).await {
-                                eprintln!("files on close: {e}");
+                        // Files only when the DB went up cleanly (no conflict
+                        // waiting, Drive not newer), as in every backup.
+                        let files_ok = sync::backup_db(&app).await?;
+                        if files_ok {
+                            // A file still being added from the screen finishes first.
+                            let st = app.state::<AppState>();
+                            while st.uploads.busy() {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                             }
+                            attachments::upload_files_before_exit(&app).await?;
                         }
-                        backed
+                        Ok::<bool, Error>(files_ok)
                     })
                     .await;
                     if !matches!(r, Ok(Ok(_))) {

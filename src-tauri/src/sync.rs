@@ -369,8 +369,10 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
     }
 }
 
-/// Called when the desktop window closes / the Android app goes to background.
-/// Never prompts: an unresolved conflict waits for the next start.
+/// Called when the Android app goes to background (closing the desktop window
+/// does the same in two steps, see lib.rs). Never prompts: an unresolved
+/// conflict waits for the next start.
+#[cfg_attr(desktop, allow(dead_code))]
 pub async fn auto_backup(app: &AppHandle) -> Result<bool> {
     let cfg = app.state::<AppState>().device.get();
     if !cfg.auto_backup || !logged_in(app) {

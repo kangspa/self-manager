@@ -364,15 +364,16 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
     sync_files_with(app, true, true).await
 }
 
-/// Only pushes this device's new files: before leaving a profile, where
-/// downloads would only make the wait longer (they happen next time). A pass
-/// already running is not waited for (see below).
+/// Only pushes this device's new files, without waiting for a pass already
+/// running (Android going to background: the app keeps running).
+#[cfg_attr(desktop, allow(dead_code))]
 pub async fn upload_files(app: &AppHandle) -> Result<Value> {
     sync_files_with(app, false, false).await
 }
 
-/// Closing, out of sight: lets a pass already running finish its uploads (the
-/// process ending would cut them off), then pushes what it didn't cover.
+/// Only pushes this device's new files, after a pass already running (its
+/// uploads must not be cut off): leaving a profile or closing the app, where
+/// downloads would only make the wait longer (they happen next time).
 pub async fn upload_files_before_exit(app: &AppHandle) -> Result<Value> {
     sync_files_with(app, false, true).await
 }
@@ -444,7 +445,8 @@ async fn sync_files_with(app: &AppHandle, downloads: bool, wait: bool) -> Result
         // stamp), and judge "unused" from the attachment list read *now*, under
         // the DB-sync lock so no merge can swap the DB in while we decide.
         // The list read at the start of this pass may be stale by now.
-        {
+        // Upload-only passes (leaving a profile, closing) never prune.
+        if downloads {
             let _no_db_sync = state.sync_lock.lock().await;
             // `remote` was listed with this account; a login (which resets the
             // state under this same lock) may have switched it since.
