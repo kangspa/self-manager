@@ -354,11 +354,31 @@ fn wanted_files(app: &AppHandle) -> Result<HashMap<String, (u64, String)>> {
 }
 
 pub async fn sync_files(app: &AppHandle) -> Result<Value> {
+    sync_files_with(app, true).await
+}
+
+/// Only pushes this device's new files: before leaving a profile or closing,
+/// where downloads would only make the wait longer (they happen next time).
+pub async fn upload_files(app: &AppHandle) -> Result<Value> {
+    sync_files_with(app, false).await
+}
+
+async fn sync_files_with(app: &AppHandle, downloads: bool) -> Result<Value> {
     use tauri::Emitter;
     let state = app.state::<AppState>();
     // Bound to the active profile: no switch while this runs (see profiles.rs).
     let _profile = crate::hold(&state, None)?;
-    let _pass = state.file_sync.pass.lock().await;
+    // Upload-only runs while someone waits (a switch, closing): a pass already
+    // running (perhaps a long download) is not waited for. It uploads too, and
+    // a switch is refused while it holds the profile anyway.
+    let _pass = if downloads {
+        state.file_sync.pass.lock().await
+    } else {
+        match state.file_sync.pass.try_lock() {
+            Ok(p) => p,
+            Err(_) => return Ok(json!({ "skipped": "busy" })),
+        }
+    };
     // Everything this pass learns about Drive belongs to the account it started
     // with; after a switch it neither prunes nor records anything.
     let epoch = state.device.get().drive_epoch;
@@ -385,7 +405,7 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
                     }
                     Err(e) => failed.push(format!("{name}: {e}")),
                 }
-            } else if !local.exists() && remote.contains_key(sha) {
+            } else if downloads && !local.exists() && remote.contains_key(sha) {
                 let _ = app.emit("files-progress", json!({ "stage": "download", "name": name, "done": done, "total": total }));
                 state.file_sync.downloading.lock().unwrap().insert(sha.clone());
                 // Unmarked however this ends, also when the pass is dropped mid-download.

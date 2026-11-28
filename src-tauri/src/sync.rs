@@ -380,7 +380,7 @@ pub async fn auto_backup(app: &AppHandle) -> Result<bool> {
     // Closing / going to background: push new files now (the caller bounds the time;
     // an interrupted upload simply happens again next time).
     if files_may_follow(&o) {
-        crate::attachments::sync_files(app).await?;
+        crate::attachments::upload_files(app).await?;
     }
     Ok(matches!(o, Outcome::Uploaded | Outcome::Merged { .. }))
 }

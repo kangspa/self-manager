@@ -877,7 +877,7 @@ async fn backup_before_leaving(app: &AppHandle) {
     // The profile's new files: nothing uploads them once it is no longer in
     // use, so the switch waits for them (a failed file is retried when the
     // profile is used again; the limit only guards against a stuck network).
-    match tokio::time::timeout(std::time::Duration::from_secs(30 * 60), attachments::sync_files(app)).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(30 * 60), attachments::upload_files(app)).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => eprintln!("files before switch: {e}"),
         Err(_) => eprintln!("files before switch: timed out"),
