@@ -60,15 +60,21 @@ pub fn effective_sync(mode: &str, size: u64, limit: u64) -> bool {
 /// In-progress uploads from the webview (`<input type=file>` works the same on
 /// PC and Android, so files arrive as chunks instead of paths).
 impl Uploads {
-    /// A file being sent in chunks (it lands in the active profile's store).
+    /// A file being sent in chunks, or one whose record is still being written
+    /// (it lands in the active profile's store and DB).
     pub fn busy(&self) -> bool {
-        self.open.lock().map(|m| !m.is_empty()).unwrap_or(true)
+        // Read in this order: `finish` counts itself in before it leaves `open`
+        // (under the same lock), so an upload is never seen in neither.
+        let open = self.open.lock().map(|m| !m.is_empty()).unwrap_or(true);
+        open || self.finishing.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
 
 #[derive(Default)]
 pub struct Uploads {
     open: Mutex<HashMap<String, PendingUpload>>,
+    /// Uploads past their last chunk whose file and record are being stored.
+    finishing: std::sync::atomic::AtomicUsize,
     /// Held while a file is moved into the store and its row inserted, and
     /// while garbage is collected, so gc never sees a stored-but-unlisted file.
     store_lock: Mutex<()>,
@@ -110,9 +116,22 @@ pub fn chunk(app: &AppHandle, token: &str, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn finish(app: &AppHandle, token: &str) -> Result<Value> {
-    let up = app.state::<AppState>().uploads.open.lock().unwrap().remove(token).ok_or_else(|| Error::msg("업로드가 시작되지 않았습니다"))?;
-    let sha = format!("{:x}", up.hasher.finalize());
     let st = app.state::<AppState>();
+    let up = {
+        let mut open = st.uploads.open.lock().unwrap();
+        let up = open.remove(token).ok_or_else(|| Error::msg("업로드가 시작되지 않았습니다"))?;
+        // Still busy until the record is in the DB (a backup on closing waits for it).
+        st.uploads.finishing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        up
+    };
+    struct Done<'a>(&'a std::sync::atomic::AtomicUsize);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _done = Done(&st.uploads.finishing);
+    let sha = format!("{:x}", up.hasher.finalize());
     let _g = st.uploads.store_lock.lock().unwrap();
     store(app, &up.path, &sha)?;
     insert_row(app, &up.owner_table, up.owner_id, None, &up.name, up.mime.as_deref(), up.size, &sha)
