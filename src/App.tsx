@@ -136,7 +136,7 @@ function useBackendEvents() {
     offs.push(listen("meeting-updated", () => { notifyChange("meetings"); notifyChange("attachments"); }));
     // Background file sync finished: refresh "동기화됨 / 받는 중" labels.
     offs.push(listen("files-synced", () => notifyChange("attachments")));
-    offs.push(listen("switch-backup", () => toast("계정을 바꾸기 전에 지금 계정의 변경을 드라이브에 백업합니다…")));
+    offs.push(listen("switch-backup", () => toast("계정을 바꾸기 전에 지금 계정의 변경과 새 첨부 파일을 드라이브에 백업합니다…")));
     offs.push(listen<string>("sync-error", (e) => toast(e.payload, "error")));
     offs.push(listen<number>("notif-imported", (e) => e.payload > 0 && toast(`알림에서 지출 ${e.payload}건을 가계부에 추가했습니다`, "ok")));
     return () => offs.forEach((p) => p.then((f) => f()));

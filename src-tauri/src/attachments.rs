@@ -388,8 +388,17 @@ pub async fn sync_files(app: &AppHandle) -> Result<Value> {
             } else if !local.exists() && remote.contains_key(sha) {
                 let _ = app.emit("files-progress", json!({ "stage": "download", "name": name, "done": done, "total": total }));
                 state.file_sync.downloading.lock().unwrap().insert(sha.clone());
+                // Unmarked however this ends, also when the pass is dropped mid-download.
+                struct Unmark<'a>(&'a std::sync::Mutex<HashSet<String>>, &'a str);
+                impl Drop for Unmark<'_> {
+                    fn drop(&mut self) {
+                        if let Ok(mut d) = self.0.lock() {
+                            d.remove(self.1);
+                        }
+                    }
+                }
+                let _unmark = Unmark(&state.file_sync.downloading, sha);
                 let r = crate::google::download_file(app, epoch, &remote[sha], &local, sha).await;
-                state.file_sync.downloading.lock().unwrap().remove(sha);
                 match r {
                     Ok(()) => down += 1,
                     Err(e) => failed.push(format!("{name}: {e}")),

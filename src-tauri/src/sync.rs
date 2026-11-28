@@ -379,10 +379,24 @@ pub async fn auto_backup(app: &AppHandle) -> Result<bool> {
     let o = reconcile(app, Mode::Backup, false, None).await?;
     // Closing / going to background: push new files now (the caller bounds the time;
     // an interrupted upload simply happens again next time).
-    if !matches!(o, Outcome::NeedsChoice { .. } | Outcome::RemoteNewer) {
+    if files_may_follow(&o) {
         crate::attachments::sync_files(app).await?;
     }
     Ok(matches!(o, Outcome::Uploaded | Outcome::Merged { .. }))
+}
+
+/// The DB part of an automatic backup; true when its files may be pushed next
+/// (no conflict waiting, Drive not newer).
+pub async fn backup_db(app: &AppHandle) -> Result<bool> {
+    let cfg = app.state::<AppState>().device.get();
+    if !cfg.auto_backup || !logged_in(app) {
+        return Ok(false);
+    }
+    Ok(files_may_follow(&reconcile(app, Mode::Backup, false, None).await?))
+}
+
+fn files_may_follow(o: &Outcome) -> bool {
+    !matches!(o, Outcome::NeedsChoice { .. } | Outcome::RemoteNewer)
 }
 
 /// Called on start (both platforms) and on resume (Android).

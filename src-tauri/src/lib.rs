@@ -762,8 +762,7 @@ async fn att_export(app: AppHandle, id: i64, dest: Option<String>, profile_token
             Ok(d)
         }
         None => {
-            mobile::save_to_downloads(&app, &src, &name, row["mime"].as_str().unwrap_or("application/octet-stream"))?;
-            Ok(format!("다운로드/{name}"))
+            mobile::save_to_downloads(&app, &src, &name, row["mime"].as_str().unwrap_or("application/octet-stream"))
         }
     }
 }
@@ -869,10 +868,19 @@ async fn backup_before_leaving(app: &AppHandle) {
         return;
     }
     let _ = app.emit("switch-backup", ());
-    match tokio::time::timeout(std::time::Duration::from_secs(20), sync::auto_backup(app)).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(20), sync::backup_db(app)).await {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => return,
+        Ok(Err(e)) => return eprintln!("backup before switch: {e}"),
+        Err(_) => return eprintln!("backup before switch: timed out"),
+    }
+    // The profile's new files: nothing uploads them once it is no longer in
+    // use, so the switch waits for them (a failed file is retried when the
+    // profile is used again; the limit only guards against a stuck network).
+    match tokio::time::timeout(std::time::Duration::from_secs(30 * 60), attachments::sync_files(app)).await {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => eprintln!("backup before switch: {e}"),
-        Err(_) => eprintln!("backup before switch: timed out"),
+        Ok(Err(e)) => eprintln!("files before switch: {e}"),
+        Err(_) => eprintln!("files before switch: timed out"),
     }
 }
 
@@ -961,7 +969,8 @@ pub fn run() {
                 state.closing.store(true, Ordering::SeqCst);
                 let _ = window.hide();
                 tauri::async_runtime::spawn(async move {
-                    let r = tokio::time::timeout(std::time::Duration::from_secs(90), sync::auto_backup(&app)).await;
+                    // The window is gone already: large files get time to finish.
+                    let r = tokio::time::timeout(std::time::Duration::from_secs(30 * 60), sync::auto_backup(&app)).await;
                     if !matches!(r, Ok(Ok(_))) {
                         eprintln!("auto backup on close failed: {:?}", r.map(|x| x.map_err(|e| e.to_string())));
                     }

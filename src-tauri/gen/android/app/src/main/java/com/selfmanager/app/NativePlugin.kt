@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Build
-import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
 import android.provider.Settings
@@ -214,13 +213,25 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
 
     // ---------- Files ----------
 
-    /** Copies a file of the app into the phone's Download folder (seen in the Files app). */
+    /**
+     * Saves a copy of an app file where the user finds it: Android 10+ puts it
+     * straight into Download; older ones (where that needs a storage permission)
+     * ask where to save it with the system's save screen, which needs none.
+     */
     @Command
     fun saveToDownloads(invoke: Invoke) {
         val args = invoke.parseArgs(SaveArgs::class.java)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(args.mime)
+                .putExtra(Intent.EXTRA_TITLE, args.name)
+            startActivityForResult(invoke, intent, "onSaveDocument")
+            return
+        }
         try {
             val src = java.io.File(args.path)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            run {
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, args.name)
                     put(MediaStore.Downloads.MIME_TYPE, args.mime)
@@ -233,13 +244,24 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
                 values.clear()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
-            } else {
-                @Suppress("DEPRECATION")
-                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                dir.mkdirs()
-                src.copyTo(java.io.File(dir, args.name), overwrite = false)
             }
-            invoke.resolve(JSObject().put("name", args.name))
+            invoke.resolve(JSObject().put("place", "다운로드/" + args.name))
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: "파일을 저장하지 못했습니다")
+        }
+    }
+
+    @ActivityCallback
+    fun onSaveDocument(invoke: Invoke, result: ActivityResult) {
+        val uri = result.data?.data
+        if (result.resultCode != Activity.RESULT_OK || uri == null) {
+            invoke.reject("저장을 취소했습니다")
+            return
+        }
+        val args = invoke.parseArgs(SaveArgs::class.java)
+        try {
+            activity.contentResolver.openOutputStream(uri).use { out -> java.io.File(args.path).inputStream().use { it.copyTo(out!!) } }
+            invoke.resolve(JSObject().put("place", args.name))
         } catch (e: Exception) {
             invoke.reject(e.message ?: "파일을 저장하지 못했습니다")
         }
