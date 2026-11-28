@@ -972,7 +972,9 @@ pub fn run() {
                 let cfg = state.device.get();
                 // Also when nothing changed but a file sync is moving files right
                 // now: quitting would cut its upload off.
-                let syncing_files = state.file_sync.busy();
+                // Or a file being added from the screen: its record is written
+                // when it finishes, after which the DB must still go up.
+                let syncing_files = state.file_sync.busy() || state.uploads.busy();
                 let needs = cfg.auto_backup && sync::logged_in(&app) && (cfg.synced_local_modified != state.db.last_modified().ok() || syncing_files);
                 if !needs {
                     return;
@@ -984,15 +986,18 @@ pub fn run() {
                     // The window is gone already: large files get time to finish,
                     // and a file sync already running is let finish before exit.
                     let r = tokio::time::timeout(std::time::Duration::from_secs(30 * 60), async {
+                        // A file still being added from the screen finishes first,
+                        // so its record is in the DB that goes up (bounded: a
+                        // stalled one is dropped like any cut-off upload).
+                        let st = app.state::<AppState>();
+                        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                        while st.uploads.busy() && std::time::Instant::now() < until {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
                         // Files only when the DB went up cleanly (no conflict
                         // waiting, Drive not newer), as in every backup.
                         let files_ok = sync::backup_db(&app).await?;
                         if files_ok {
-                            // A file still being added from the screen finishes first.
-                            let st = app.state::<AppState>();
-                            while st.uploads.busy() {
-                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                            }
                             attachments::upload_files_before_exit(&app).await?;
                         }
                         Ok::<bool, Error>(files_ok)
