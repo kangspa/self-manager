@@ -315,9 +315,10 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
         fetched = Some(tmp);
     }
 
-    // Merged only to keep those days, this is still a download: it goes back up
-    // only where a download alone would (not on auto-load without auto-backup).
-    let upload_after_merge = local_changed || mode != Mode::Load || cfg.auto_backup;
+    // Auto-load uploads only with auto-backup on, merged or not (as for local
+    // changes alone, below). Without the upload the merged DB simply counts as
+    // a local change until a backup or a manual sync sends it.
+    let upload_after_merge = mode != Mode::Load || cfg.auto_backup;
 
     match (local_changed || keep_paid, remote_changed) {
         (false, false) => Ok(Some(Outcome::Nothing)),
