@@ -2,7 +2,7 @@ import { FormEvent, useRef, useState } from "react";
 import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
 import { daysUntil } from "../lib/date";
-import { Attachments } from "../components/Attachments";
+import { LooseFiles } from "../components/Attachments";
 import { confirmDialog, Empty, PageHeader, SearchBox, Tabs, toast, useDebounced } from "../components/ui";
 import { RichText } from "../components/RichText";
 import { richFirstLine } from "../lib/rich";
@@ -36,7 +36,7 @@ function TaskMemo({ task, focusTitle }: { task: Row; focusTitle?: boolean }) {
         <span className="spacer" />
         <button className="btn sm danger" onClick={async () => (await confirmDialog("이 할 일을 삭제할까요?", true)) && db.remove("tasks", task.id)}>삭제</button>
       </div>
-      <Attachments ownerTable="tasks" ownerId={task.id} />
+      <LooseFiles ownerTable="tasks" ownerId={task.id} texts={[d.note]} />
     </div>
   );
 }

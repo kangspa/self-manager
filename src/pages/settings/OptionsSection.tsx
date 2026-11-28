@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { db } from "../../lib/api";
 import { OptionItem, useOptions } from "../../lib/hooks";
-import { confirmDialog, Fold } from "../../components/ui";
+import { confirmDialog, Fold, Modal } from "../../components/ui";
 
 export const OPTION_SETS: [string, string, string][] = [
-  ["expense.location", "가계부 · 결제 위치", "알림 가계부에 앱을 등록하면 앱 이름으로 자동 추가됩니다"],
+  ["expense.location", "가계부 · 결제 위치", "휴대폰의 알림 가계부에서 앱을 고르면 앱 이름으로 자동 추가됩니다"],
   ["expense.item", "가계부 · 품목", ""],
   ["expense.status", "가계부 · 현재 상태", "맨 위 항목이 새 지출의 기본 상태입니다"],
   ["goal.status", "목표 · 상태", ""],
@@ -35,7 +35,7 @@ function OptionRow({ o, list, i }: { o: OptionItem; list: OptionItem[]; i: numbe
   );
 }
 
-function OptionSet({ setKey, title, hint }: { setKey: string; title: string; hint: string }) {
+function OptionSetBody({ setKey, hint, autoFocus }: { setKey: string; hint: string; autoFocus?: boolean }) {
   const list = useOptions(setKey);
   const [label, setLabel] = useState("");
   const add = async () => {
@@ -44,14 +44,49 @@ function OptionSet({ setKey, title, hint }: { setKey: string; title: string; hin
     setLabel("");
   };
   return (
-    <Fold head={<><b>{title}</b> <span className="faint small">{list.filter((o) => !o.archived).length}개</span></>}>
+    <>
       {hint && <div className="faint small" style={{ marginBottom: 8 }}>{hint}</div>}
       <div className="list">{list.map((o, i) => <OptionRow key={o.id} o={o} list={list} i={i} />)}</div>
       <div className="row" style={{ marginTop: 8 }}>
-        <input className="grow" placeholder="새 값" value={label} onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()} />
+        <input className="grow" placeholder="새 값" value={label} autoFocus={autoFocus} onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()} />
         <button className="btn sm" onClick={add}>추가</button>
       </div>
+    </>
+  );
+}
+
+function OptionSet({ setKey, title, hint }: { setKey: string; title: string; hint: string }) {
+  const list = useOptions(setKey);
+  return (
+    <Fold head={<><b>{title}</b> <span className="faint small">{list.filter((o) => !o.archived).length}개</span></>}>
+      <OptionSetBody setKey={setKey} hint={hint} />
     </Fold>
+  );
+}
+
+/** One option set edited in place, from the page that uses it (no trip to 설정). */
+export function OptionManager({ setKey, onClose }: { setKey: string; onClose: () => void }) {
+  const [, title, hint] = OPTION_SETS.find(([k]) => k === setKey) ?? [setKey, "선택값", ""];
+  return (
+    <Modal open onClose={onClose} title={`${title} 관리`} footer={<button className="btn primary" onClick={onClose}>완료</button>}>
+      <OptionSetBody setKey={setKey} hint={hint} autoFocus />
+    </Modal>
+  );
+}
+
+/** A page's option sets (e.g. 가계부: 결제 위치·품목·현재 상태), from its header. */
+export function OptionSetsButton({ prefix }: { prefix: string }) {
+  const [open, setOpen] = useState(false);
+  const sets = OPTION_SETS.filter(([k]) => k.startsWith(prefix));
+  return (
+    <>
+      <button className="btn sm" onClick={() => setOpen(true)} title="이 화면에서 고르는 값을 추가·수정합니다">⚙ 선택값</button>
+      {open && (
+        <Modal open wide onClose={() => setOpen(false)} title="선택값 관리" footer={<button className="btn primary" onClick={() => setOpen(false)}>완료</button>}>
+          <div className="stack">{sets.map(([k, t, h]) => <OptionSet key={k} setKey={k} title={t} hint={h} />)}</div>
+        </Modal>
+      )}
+    </>
   );
 }
 

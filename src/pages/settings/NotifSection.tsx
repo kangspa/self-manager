@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { api, db, Parsed, Row } from "../../lib/api";
 import { useOptions, useRows } from "../../lib/hooks";
 import { won } from "../../lib/date";
-import { Empty, Field, Modal, OptionSelect, run, toast } from "../../components/ui";
+import { Empty, Field, Modal, OptionSelect, toast } from "../../components/ui";
 
 type Rule = { include?: string; exclude?: string; amount_regex?: string; name_regex?: string; name_source?: string };
-type App = { package: string; label: string };
+type App = { package: string; label: string; icon?: string };
 
 function RuleEditor({ app, onClose }: { app: Row; onClose: () => void }) {
   const locs = useOptions("expense.location");
@@ -61,86 +61,127 @@ function RuleEditor({ app, onClose }: { app: Row; onClose: () => void }) {
   );
 }
 
+/**
+ * Android only (the PC has no notifications to read). The phone's apps as a
+ * checklist: ticking one starts reading its notifications, with a payment
+ * place named after it; unticking stops (its rules are kept for next time).
+ */
 export default function NotifSection() {
   const apps = useRows("notif_apps", { order: [["label", "asc"]] });
   const locs = useOptions("expense.location");
   const [edit, setEdit] = useState<Row | null>(null);
-  const [picker, setPicker] = useState<App[] | null>(null);
+  const [installed, setInstalled] = useState<App[] | null>(null);
   const [filter, setFilter] = useState("");
-  const [pkg, setPkg] = useState("");
   const [access, setAccess] = useState<boolean | null>(null);
-  const android = navigator.userAgent.includes("Android");
+  const [busy, setBusy] = useState<string | null>(null);
 
+  const checkAccess = () => api.native<{ granted: boolean }>("notificationAccess").then((r) => setAccess(r.granted)).catch(() => {});
   useEffect(() => {
-    if (android) api.native<{ granted: boolean }>("notificationAccess").then((r) => setAccess(r.granted)).catch(() => {});
-  }, [android]);
+    checkAccess();
+    // Back from the system's permission screen.
+    const h = () => document.visibilityState === "visible" && checkAccess();
+    document.addEventListener("visibilitychange", h);
+    Promise.all([api.native<{ apps: App[] }>("listApps"), api.native<{ apps: App[] }>("recentPackages").catch(() => ({ apps: [] as App[] }))])
+      .then(([list, recent]) => {
+        // Apps that posted notifications lately come first: likely card / bank apps.
+                const icons = new Map(list.apps.map((a) => [a.package, a.icon]));
+        // Only apps that can be opened (the system UI and this app also post notifications).
+        const recentApps = recent.apps.filter((a) => icons.has(a.package)).map((a) => ({ ...a, icon: icons.get(a.package) }));
+        setInstalled([...recentApps, ...list.apps.filter((a) => !recentApps.some((r) => r.package === a.package))]);
+      })
+      .catch((e) => {
+        toast(String(e), "error");
+        setInstalled([]);
+      });
+    return () => document.removeEventListener("visibilitychange", h);
+  }, []);
 
-  const add = async (a: App) => {
-    if (apps.rows.some((x) => x.package === a.package)) return toast("이미 등록된 앱입니다");
-    // 결제 위치는 앱 기준: reuse a location with the same name or create one.
-    let loc = locs.find((l) => l.label === a.label);
-    if (!loc) loc = (await db.upsert("option_items", { set_key: "expense.location", label: a.label, color: "#4b8bf5", sort: locs.length })) as any;
-    await db.upsert("notif_apps", { package: a.package, label: a.label, location_id: loc!.id, enabled: 1, rule_json: "{}" });
-    await run(() => api.notifSync());
-    setPicker(null);
+  const rowOf = (pkg: string) => apps.rows.find((x) => x.package === pkg);
+  const toggle = async (a: App, on: boolean) => {
+    setBusy(a.package);
+    try {
+      const row = rowOf(a.package);
+      if (row) {
+        await db.upsert("notif_apps", { id: row.id, enabled: on ? 1 : 0 });
+      } else if (on) {
+        // 결제 위치 follows the app: reuse a place with the same name or create one.
+        let loc = locs.find((l) => l.label === a.label);
+        if (!loc) loc = (await db.upsert("option_items", { set_key: "expense.location", label: a.label, color: "#4b8bf5", sort: locs.length })) as any;
+        await db.upsert("notif_apps", { package: a.package, label: a.label, location_id: loc!.id, enabled: 1, rule_json: "{}" });
+      }
+      await api.notifSync();
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    setBusy(null);
   };
 
-  const openPicker = async () => {
-    const [list, recent] = await Promise.all([api.native<{ apps: App[] }>("listApps"), api.native<{ apps: App[] }>("recentPackages").catch(() => ({ apps: [] }))]);
-    const seen = new Set(recent.apps.map((a) => a.package));
-    setPicker([...recent.apps, ...list.apps.filter((a) => !seen.has(a.package))]);
-  };
+  const on = apps.rows.filter((a) => a.enabled);
+  const q = filter.trim().toLowerCase();
+  const shown = (installed ?? []).filter((a) => !q || a.label.toLowerCase().includes(q) || a.package.toLowerCase().includes(q));
+  const icon = (pkg: string) => installed?.find((a) => a.package === pkg)?.icon;
 
   return (
-    <div>
-      <p className="muted" style={{ marginTop: 0 }}>
-        선택한 앱의 알림 문구에서 <b>지출명·결제 위치·구매 금액·구매 날짜</b>를 읽어 가계부에 자동으로 기록합니다. Android에서만 알림을 받을 수 있고, PC에서는 규칙 테스트만 됩니다.
+    <div className="stack">
+      <p className="muted" style={{ margin: 0 }}>
+        알림을 읽을 앱을 고르면 그 앱의 결제 알림에서 <b>지출명·결제 위치·구매 금액·구매 날짜</b>를 읽어 가계부에 자동으로 기록합니다. 기록은 PC와 동기화됩니다.
       </p>
-      {android && access === false && (
-        <div className="notice row" style={{ marginBottom: 12 }}>
+      {access === false && (
+        <div className="notice row">
           <b style={{ color: "var(--danger)" }}>알림 접근 권한이 필요합니다.</b>
           <button className="btn sm primary" onClick={() => api.native("openNotificationSettings")}>권한 설정 열기</button>
           <span className="faint small">설정에서 Self Manager를 켠 뒤 돌아오세요.</span>
         </div>
       )}
-      <div className="row" style={{ marginBottom: 12 }}>
-        {android ? (
-          <button className="btn primary" onClick={() => run(openPicker)}>+ 앱 선택</button>
+      <div className="card section">
+        <div className="section-title">알림을 읽는 앱 <span className="faint small">{on.length}개</span></div>
+        {on.length === 0 ? (
+          <div className="faint small">아직 없습니다. 아래 목록에서 카드사·은행·결제 앱을 체크하세요.</div>
         ) : (
-          <>
-            <input placeholder="패키지명 (예: com.kbcard.cxh.appcard)" value={pkg} onChange={(e) => setPkg(e.target.value)} style={{ width: 320 }} />
-            <button className="btn primary" disabled={!pkg.trim()} onClick={() => { add({ package: pkg.trim(), label: pkg.trim().split(".").pop() ?? pkg }); setPkg(""); }}>+ 등록</button>
-          </>
-        )}
-      </div>
-      {apps.rows.length === 0 && <Empty>등록된 앱이 없습니다. 카드사·은행·쇼핑 앱을 등록하세요.</Empty>}
-      <div className="list">
-        {apps.rows.map((a) => (
-          <div key={a.id} className="list-row">
-            <input type="checkbox" checked={!!a.enabled} onChange={(e) => db.upsert("notif_apps", { id: a.id, enabled: e.target.checked ? 1 : 0 }).then(() => api.notifSync())} />
-            <div className="grow">
-              <b>{a.label || a.package}</b>
-              <div className="faint small">{a.package} · 결제 위치: {locs.find((l) => l.id === a.location_id)?.label ?? "없음"}</div>
-            </div>
-            <button className="btn sm" onClick={() => setEdit(a)}>규칙·테스트</button>
-            <button className="icon-btn" aria-label="삭제" onClick={() => db.remove("notif_apps", a.id).then(() => api.notifSync())}>✕</button>
-          </div>
-        ))}
-      </div>
-      {edit && <RuleEditor app={edit} onClose={() => setEdit(null)} />}
-      {picker && (
-        <Modal open onClose={() => setPicker(null)} title="알림을 읽을 앱 선택">
-          <input placeholder="검색" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
-          <div className="list" style={{ maxHeight: "60vh", overflowY: "auto" }}>
-            {picker.filter((a) => !filter || a.label.includes(filter) || a.package.includes(filter)).map((a) => (
-              <div key={a.package} className="list-row click" onClick={() => add(a)}>
-                <div className="grow"><b>{a.label}</b><div className="faint small">{a.package}</div></div>
-                {apps.rows.some((x) => x.package === a.package) && <span className="badge ok">등록됨</span>}
+          <div className="list">
+            {on.map((a) => (
+              <div key={a.id} className="list-row">
+                <AppIcon src={icon(a.package)} />
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <b className="ellipsis">{a.label || a.package}</b>
+                  <div className="faint small ellipsis">결제 위치: {locs.find((l) => l.id === a.location_id)?.label ?? "없음"}</div>
+                </div>
+                <button className="btn sm" onClick={() => setEdit(a)}>규칙·테스트</button>
+                <button className="icon-btn" aria-label="그만 읽기" title="그만 읽기" disabled={busy === a.package} onClick={() => toggle({ package: a.package, label: a.label }, false)}>✕</button>
               </div>
             ))}
           </div>
-        </Modal>
-      )}
+        )}
+      </div>
+      <div className="card section">
+        <div className="section-title">이 휴대폰의 앱</div>
+        <input placeholder="앱 이름 검색" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+        {installed === null ? (
+          <div className="faint small">앱 목록을 읽는 중…</div>
+        ) : (
+          <div className="list app-pick">
+            {shown.map((a) => {
+              const checked = !!rowOf(a.package)?.enabled;
+              return (
+                <label key={a.package} className="list-row click">
+                  <input type="checkbox" checked={checked} disabled={busy === a.package} onChange={(e) => toggle(a, e.target.checked)} />
+                  <AppIcon src={a.icon} />
+                  <div className="grow" style={{ minWidth: 0 }}>
+                    <div className="ellipsis">{a.label}</div>
+                    <div className="faint small ellipsis">{a.package}</div>
+                  </div>
+                </label>
+              );
+            })}
+            {shown.length === 0 && <Empty>찾는 앱이 없습니다</Empty>}
+          </div>
+        )}
+      </div>
+      {edit && <RuleEditor app={edit} onClose={() => setEdit(null)} />}
     </div>
   );
+}
+
+function AppIcon({ src }: { src?: string }) {
+  return src ? <img className="app-icon" src={src} alt="" /> : <span className="app-icon blank" />;
 }

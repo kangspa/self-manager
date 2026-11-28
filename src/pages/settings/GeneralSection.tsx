@@ -2,14 +2,29 @@ import { getWeekStart, WeekStart } from "../../lib/date";
 import { useWeekStartSetting } from "../../lib/weekStart";
 import { useHiddenNav } from "../../lib/navPrefs";
 import { NAV } from "../../App";
+import { setTheme, Theme, useThemeSetting } from "../../lib/theme";
 
 export default function GeneralSection() {
   const { saved, save } = useWeekStartSetting();
   const value = saved ?? getWeekStart();
   const opts: [WeekStart, string][] = [[0, "일요일"], [1, "월요일"]];
   const { hidden, save: saveHidden } = useHiddenNav();
+  const theme = useThemeSetting();
+  const themes: [Theme, string][] = [["light", "기본"], ["dark", "다크"], ["system", "기기 설정 따르기"]];
   return (
     <div className="stack">
+    <div className="card section">
+      <div className="section-title">테마</div>
+      <div className="faint small" style={{ marginTop: -6, marginBottom: 10 }}>이 기기에만 적용됩니다.</div>
+      <div className="row">
+        {themes.map(([v, label]) => (
+          <label key={v} className="row">
+            <input type="radio" name="theme" checked={theme === v} onChange={() => setTheme(v)} />
+            {label}
+          </label>
+        ))}
+      </div>
+    </div>
     <div className="card section">
       <div className="section-title">한 주의 시작</div>
       <div className="faint small" style={{ marginTop: -6, marginBottom: 10 }}>일기·일정·업무·일일 관리의 주간·월간 보기가 이 요일부터 시작합니다. 목표의 주간 기록은 국제 표준(ISO) 주를 따라 항상 월요일부터입니다.</div>

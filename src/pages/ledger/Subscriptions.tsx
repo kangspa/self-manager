@@ -59,8 +59,8 @@ function SubEditor({ row, onClose }: { row: Partial<Row>; onClose: () => void })
             <input type="number" min={1} max={31} value={d.day ?? 1} onChange={(e) => set("day", Number(e.target.value))} />
           </Field>
         )}
-        <Field label="결제 위치"><OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} /></Field>
-        <Field label="품목"><OptionSelect options={o.item} value={d.item_id} onChange={(v) => set("item_id", v)} /></Field>
+        <Field label="결제 위치"><OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} setKey="expense.location" /></Field>
+        <Field label="품목"><OptionSelect options={o.item} value={d.item_id} onChange={(v) => set("item_id", v)} setKey="expense.item" /></Field>
         <Field label="시작일 (선택)"><input type="date" value={d.start_date ?? ""} onChange={(e) => set("start_date", e.target.value || null)} /></Field>
         <Field label="종료일 (선택)"><input type="date" value={d.end_date ?? ""} onChange={(e) => set("end_date", e.target.value || null)} /></Field>
       </div>

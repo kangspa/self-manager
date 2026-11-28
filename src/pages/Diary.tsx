@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { db, Row } from "../lib/api";
 import { useAutosave, useLoad, useRows } from "../lib/hooks";
 import { daysBetween, fmtDate, monthGrid } from "../lib/date";
-import { Attachments } from "../components/Attachments";
+import { LooseFiles } from "../components/Attachments";
 import { MonthGrid, PeriodNav, usePeriod, WeekColumns } from "../components/Period";
 import { confirmDialog, Empty, PageHeader, SearchBox, useDebounced } from "../components/ui";
 import { RichText, RichOwner } from "../components/RichText";
@@ -19,10 +19,10 @@ export function parseFields(t?: Row | null): DiaryField[] {
   }
 }
 
-function FieldInput({ f, value, onChange, owner }: { f: DiaryField; value: any; onChange: (v: any) => void; owner?: RichOwner }) {
+function FieldInput({ f, value, onChange, owner, ensureOwner }: { f: DiaryField; value: any; onChange: (v: any) => void; owner?: RichOwner; ensureOwner?: () => Promise<RichOwner> }) {
   switch (f.type) {
     case "longtext":
-      return <RichText value={value ?? ""} onChange={onChange} owner={owner} />;
+      return <RichText value={value ?? ""} onChange={onChange} owner={owner} ensureOwner={ensureOwner} />;
     case "rating":
       return (
         <div className="row" style={{ fontSize: 22, gap: 4 }}>
@@ -92,10 +92,10 @@ function Entry({ date, entry, templates }: { date: string; entry: Row | undefine
       {fields.map((f) => (
         <div key={f.key} className="section" style={{ marginTop: 18 }}>
           <div className="field-label" style={{ marginBottom: 6 }}>{f.label}</div>
-          <FieldInput f={f} value={vals[f.key]} onChange={(v) => setVals((p) => ({ ...p, [f.key]: v }))} owner={entryId ? { table: "diary_entries", id: entryId } : undefined} />
+          <FieldInput f={f} value={vals[f.key]} onChange={(v) => setVals((p) => ({ ...p, [f.key]: v }))} owner={entryId ? { table: "diary_entries", id: entryId } : undefined} ensureOwner={async () => ({ table: "diary_entries", id: await ensureEntry() })} />
         </div>
       ))}
-      <Attachments ownerTable="diary_entries" ownerId={entryId} ensureOwner={ensureEntry} title="사진·첨부 파일" />
+      <LooseFiles ownerTable="diary_entries" ownerId={entryId} texts={fields.filter((f) => f.type === "longtext").map((f) => vals[f.key])} />
       {orphans.length > 0 && (
         <details className="section">
           <summary className="muted small">다른 템플릿으로 쓴 내용 {orphans.length}개</summary>

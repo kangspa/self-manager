@@ -45,6 +45,7 @@ export function richPlain(value: string | null | undefined): string {
     for (const b of bs) {
       const pad = "  ".repeat(depth);
       if (b.type === "image") out.push(`${pad}[이미지${b.props?.name ? `: ${b.props.name}` : ""}]`);
+      else if (b.type === "aiNote") out.push(`${pad}[AI 노트]`);
       else if (b.type === "file" || b.type === "video" || b.type === "audio") out.push(`${pad}[파일${b.props?.name ? `: ${b.props.name}` : ""}]`);
       else if (b.type === "table") out.push(`${pad}[표]`);
       else {
@@ -84,6 +85,7 @@ export function richToMarkdown(value: string | null | undefined): string {
         case "quote": out.push(`> ${t}`); break;
         case "image": out.push(`![${b.props?.name ?? ""}](${b.props?.url ?? ""})`); break;
         case "file": case "video": case "audio": out.push(`[${b.props?.name ?? "파일"}](${b.props?.url ?? ""})`); break;
+        case "aiNote": out.push(`${pad}[AI 노트]`); break;
         default: out.push(pad + t);
       }
       if (b.type !== "numberedListItem") n = 0;
@@ -92,6 +94,60 @@ export function richToMarkdown(value: string | null | undefined): string {
   };
   walk(blocks, 0);
   return out.join("\n");
+}
+
+function eachBlock(value: string | null | undefined, f: (b: RichBlock) => void) {
+  const walk = (bs: RichBlock[]) => bs.forEach((b) => (f(b), b.children?.length && walk(b.children)));
+  walk(parseBlocks(value) ?? []);
+}
+
+/** Attachment ids of the files placed in a stored value. */
+export function richFileIds(value: string | null | undefined): number[] {
+  const ids: number[] = [];
+  eachBlock(value, (b) => {
+    const url = b.props?.url;
+    if (typeof url === "string" && url.startsWith(ATT_SCHEME)) ids.push(Number(url.slice(ATT_SCHEME.length)));
+  });
+  return ids;
+}
+
+/** AI notes (meeting ids) placed in a stored value with the "/" menu. */
+export function richNoteIds(value: string | null | undefined): number[] {
+  const ids: number[] = [];
+  eachBlock(value, (b) => {
+    if (b.type === "aiNote" && Number(b.props?.meetingId)) ids.push(Number(b.props!.meetingId));
+  });
+  return ids;
+}
+
+/** The editor block that shows an attachment. */
+export function fileBlock(a: { id: number; name: string; mime: string | null }) {
+  const m = a.mime ?? "";
+  const type = m.startsWith("image/") ? "image" : m.startsWith("video/") ? "video" : m.startsWith("audio/") ? "audio" : "file";
+  return { type, props: { url: `${ATT_SCHEME}${a.id}`, name: a.name } };
+}
+
+// Open editors by the record they write into, so a file listed outside the
+// text can be put into it ("본문에 넣기"). The one used last wins when a
+// record has several (a diary's fields).
+type Inserter = (a: { id: number; name: string; mime: string | null }) => void;
+const inserters = new Map<string, Inserter[]>();
+const ownerKey = (table: string, id: number) => `${table}:${id}`;
+
+export function registerInserter(table: string, id: number, f: Inserter) {
+  const k = ownerKey(table, id);
+  inserters.set(k, [...(inserters.get(k) ?? []).filter((x) => x !== f), f]);
+  return () => {
+    inserters.set(k, (inserters.get(k) ?? []).filter((x) => x !== f));
+  };
+}
+
+export function insertIntoText(table: string, id: number, a: { id: number; name: string; mime: string | null }) {
+  const list = inserters.get(ownerKey(table, id)) ?? [];
+  const f = list[list.length - 1];
+  if (!f) return false;
+  f(a);
+  return true;
 }
 
 /** Simple markdown lines as blocks (headings, lists, checkboxes, quotes, text). */

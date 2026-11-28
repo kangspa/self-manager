@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { richToMarkdown } from "../../lib/rich";
-import { useNavigate } from "react-router-dom";
+import { richNoteIds } from "../../lib/rich";
 import { api, db, Row } from "../../lib/api";
 import { useAutosave } from "../../lib/hooks";
 import { fmtDate, today } from "../../lib/date";
-import { Attachments } from "../../components/Attachments";
+import { LooseFiles } from "../../components/Attachments";
 import { confirmDialog } from "../../components/ui";
 import { RichText } from "../../components/RichText";
-import { MEETING_STATUS, MeetingPanel } from "./MeetingDetail";
+import { AiNote } from "./AiNote";
+
+export { AiNote };
 
 export type Kind = "phase" | "schedule" | "log";
 export const KIND: Record<Kind, { icon: string; label: string }> = {
@@ -83,27 +84,6 @@ export function AddMenu({ label = "+ 추가", kinds, onPick }: { label?: string;
   );
 }
 
-/** One AI note block inside an item: collapsed preview, expands in place. */
-export function AiNote({ m }: { m: Row }) {
-  const [open, setOpen] = useState(false);
-  const nav = useNavigate();
-  const preview = richToMarkdown(m.summary_md).replace(/^#+\s.*$/gm, "").replace(/[-*]\s+(\[.\]\s+)?/g, "").split("\n").map((s: string) => s.trim()).filter(Boolean)[0];
-  return (
-    <div className={`ai-note ${open ? "open" : ""}`}>
-      <div className="ai-note-head click" onClick={() => setOpen(!open)}>
-        <span>🎙️</span>
-        <b className="grow ellipsis">{m.title || "AI 노트"}</b>
-        <span className="faint small">{fmtDate(m.date)}{m.duration_sec ? ` · ${Math.round(m.duration_sec / 60)}분` : ""}</span>
-        <span className={`badge ${m.status === "done" ? "ok" : m.status === "error" ? "warn" : ""}`}>{MEETING_STATUS[m.status] ?? m.status}</span>
-        <button className="icon-btn" title="전체 화면" onClick={(e) => { e.stopPropagation(); nav(`/work/meeting/${m.id}`); }}>⤢</button>
-        <span className="faint">{open ? "▾" : "▸"}</span>
-      </div>
-      {!open && preview && <div className="faint small ellipsis ai-note-preview">{preview}</div>}
-      {open && <MeetingPanel mid={m.id} embedded onDeleted={() => setOpen(false)} />}
-    </div>
-  );
-}
-
 function DateRange({ item, single }: { item: Row; single: boolean }) {
   const set = (k: "date" | "end_date", v: string) => {
     if (k === "date" && !v) return;
@@ -147,6 +127,9 @@ export function WorkItem({ item, projects, phases, notes, children, showProject,
   const projPhases = phases.filter((p) => p.project_id === item.project_id && p.id !== item.id);
   const project = projects.find((p) => p.id === item.project_id);
   const myNotes = notes.filter((n) => n.work_log_id === item.id);
+  // Notes placed in the text show there; the rest are listed under it.
+  const placed = new Set(richNoteIds(d.body));
+  const listedNotes = myNotes.filter((n) => !placed.has(n.id));
   const kids = kind === "phase" && !nested ? (children ?? []).filter((c) => c.parent_id === item.id && c.id !== item.id && kindOf(c) !== "phase") : [];
 
   const pick = async (k: Kind | "ai") => {
@@ -194,9 +177,9 @@ export function WorkItem({ item, projects, phases, notes, children, showProject,
             <span className="spacer" />
             <button className="icon-btn" aria-label="삭제" onClick={async () => (await confirmDialog(kids.length || myNotes.length ? "이 항목을 삭제할까요? 안에 있던 항목과 AI 노트는 한 단계 위로 옮겨집니다." : "이 항목을 삭제할까요?", true)) && db.remove("work_logs", item.id)}>🗑</button>
           </div>
-          <RichText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder={kind === "phase" ? "이 단계의 목표, 범위…" : "한 일, 이슈, 다음 할 일…"} owner={{ table: "work_logs", id: item.id }} />
+          <RichText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder={kind === "phase" ? "이 단계의 목표, 범위…" : "한 일, 이슈, 다음 할 일…"} owner={{ table: "work_logs", id: item.id }} onAiNote={async () => (await addAiNote({ item })).id} />
           <input className="bare small" style={{ width: "100%", color: "var(--text-soft)" }} placeholder="#태그 (쉼표로 구분)" value={d.tags} onChange={(e) => setD((x) => ({ ...x, tags: e.target.value }))} />
-          {myNotes.map((m) => <AiNote key={m.id} m={m} />)}
+          {listedNotes.map((m) => <AiNote key={m.id} m={m} />)}
           {kind === "phase" && (
             <div className="work-children">
               {kids.map((c) => <WorkItem key={c.id} item={c} projects={projects} phases={phases} notes={notes} nested />)}
@@ -205,7 +188,7 @@ export function WorkItem({ item, projects, phases, notes, children, showProject,
           <div className="row">
             <AddMenu kinds={kind === "phase" ? ["schedule", "log", "ai"] : ["ai"]} label={kind === "phase" ? "+ 이 단계에 추가" : "+ AI 노트"} onPick={pick} />
           </div>
-          <Attachments ownerTable="work_logs" ownerId={item.id} />
+          <LooseFiles ownerTable="work_logs" ownerId={item.id} texts={[d.body]} />
         </div>
       )}
     </div>

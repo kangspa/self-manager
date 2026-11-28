@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import { api, notifyChange, ProfileInfo, ProfileList } from "../lib/api";
 import { addProfile, profileLabel, switchProfile } from "../lib/profiles";
 import { confirmDialog, toast } from "./ui";
@@ -28,6 +29,11 @@ export default function ProfileSwitcher({ onNavigate }: { onNavigate?: () => voi
   const load = () => api.profileList().then(setList).catch(() => undefined);
   useEffect(() => {
     load();
+    // The account picture arrives after start (fetched in the background).
+    const off = listen("profile-updated", () => load());
+    return () => {
+      off.then((f) => f());
+    };
   }, []);
   useEffect(() => {
     if (!open) return;

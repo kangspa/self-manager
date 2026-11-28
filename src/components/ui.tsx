@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { lazy, ReactNode, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { OptionItem } from "../lib/hooks";
 
@@ -143,20 +143,40 @@ export function Chip({ label, color, faded, onClick, icon }: { label: string; co
   );
 }
 
-/** Select bound to a user-configurable option set (see Settings > 선택값). */
-export function OptionSelect({ options, value, onChange, placeholder = "선택 안 함" }: { options: OptionItem[]; value: number | null | undefined; onChange: (v: number | null) => void; placeholder?: string }) {
+const OptionManager = lazy(() => import("../pages/settings/OptionsSection").then((m) => ({ default: m.OptionManager })));
+const MANAGE = "__manage";
+
+/**
+ * Select bound to a user-configurable option set (see Settings > 선택값). Its
+ * last entry edits the set right here.
+ */
+export function OptionSelect({ options, value, onChange, placeholder = "선택 안 함", setKey }: { options: OptionItem[]; value: number | null | undefined; onChange: (v: number | null) => void; placeholder?: string; setKey?: string }) {
+  const [manage, setManage] = useState(false);
+  const key = setKey ?? options[0]?.set_key;
   const visible = options.filter((o) => !o.archived || o.id === value);
   const cur = options.find((o) => o.id === value);
   return (
     <div className="opt-select" style={{ ["--c" as any]: cur?.color || "transparent" }}>
-      <select value={value ?? ""} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+      <select
+        value={value ?? ""}
+        onChange={(e) => {
+          if (e.target.value === MANAGE) return setManage(true);
+          onChange(e.target.value ? Number(e.target.value) : null);
+        }}
+      >
         <option value="">{placeholder}</option>
         {visible.map((o) => (
           <option key={o.id} value={o.id}>
             {o.label}
           </option>
         ))}
+        {key && <option value={MANAGE}>⚙ 값 추가·수정…</option>}
       </select>
+      {manage && key && (
+        <Suspense fallback={null}>
+          <OptionManager setKey={key} onClose={() => setManage(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

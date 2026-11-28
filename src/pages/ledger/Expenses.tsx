@@ -2,7 +2,7 @@ import { useState } from "react";
 import { db, Filter, Row } from "../../lib/api";
 import { useAutosave, useOptions, useRows } from "../../lib/hooks";
 import { monthRange, nowSpace, won, ym } from "../../lib/date";
-import { Attachments } from "../../components/Attachments";
+import { LooseFiles } from "../../components/Attachments";
 import { confirmDialog, Empty, Field, Modal, OptionChip, OptionSelect, SearchBox, useDebounced } from "../../components/ui";
 import { RichText } from "../../components/RichText";
 
@@ -54,13 +54,13 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
           <input type="date" value={d.expected_delivery ?? ""} onChange={(e) => set("expected_delivery", e.target.value || null)} />
         </Field>
         <Field label="결제 위치">
-          <OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} />
+          <OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} setKey="expense.location" />
         </Field>
         <Field label="품목">
-          <OptionSelect options={o.item} value={d.item_id} onChange={(v) => set("item_id", v)} />
+          <OptionSelect options={o.item} value={d.item_id} onChange={(v) => set("item_id", v)} setKey="expense.item" />
         </Field>
         <Field label="현재 상태">
-          <OptionSelect options={o.status} value={d.status_id} onChange={(v) => set("status_id", v)} />
+          <OptionSelect options={o.status} value={d.status_id} onChange={(v) => set("status_id", v)} setKey="expense.status" />
         </Field>
         <Field label="URL">
           <input type="url" value={d.url ?? ""} placeholder="https://" onChange={(e) => set("url", e.target.value)} />
@@ -69,7 +69,7 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
       <Field label="메모">
         <RichText value={d.memo ?? ""} onChange={(v) => set("memo", v)} placeholder="구매 이유, 옵션, 교환/환불 메모 등 자유롭게" owner={row.id ? { table: "expenses", id: row.id } : undefined} />
       </Field>
-      {!isNew && <Attachments ownerTable="expenses" ownerId={row.id} title="영수증·첨부 파일" />}
+      {!isNew && <LooseFiles ownerTable="expenses" ownerId={row.id} texts={[d.memo]} />}
       {d.raw_text && (
         <details>
           <summary className="muted small">원본 알림 문구</summary>

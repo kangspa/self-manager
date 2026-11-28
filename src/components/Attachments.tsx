@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, Attachment, db, onChange, Table } from "../lib/api";
+import { insertIntoText, richFileIds } from "../lib/rich";
 import { confirmDialog, Modal, run, toast } from "./ui";
 
 export const fmtSize = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1e3))}KB`);
@@ -67,7 +68,7 @@ function usePressMenu(open: () => void) {
   };
 }
 
-function AttachmentEditor({ a, limitMb, onClose }: { a: Attachment; limitMb: number; onClose: () => void }) {
+export function AttachmentEditor({ a, limitMb, onClose }: { a: Attachment; limitMb: number; onClose: () => void }) {
   const [name, setName] = useState(a.name);
   const autoSyncs = a.size <= limitMb * 1024 * 1024;
   const setMode = (sync_mode: Attachment["sync_mode"]) => db.upsert("attachments", { id: a.id, sync_mode });
@@ -112,7 +113,7 @@ function AttachmentEditor({ a, limitMb, onClose }: { a: Attachment; limitMb: num
   );
 }
 
-function Item({ a, onEdit }: { a: Attachment; onEdit: () => void }) {
+function Item({ a, onEdit, onPlace }: { a: Attachment; onEdit: () => void; onPlace?: () => void }) {
   const press = usePressMenu(onEdit);
   const k = kindOf(a);
   const src = a.local && a.path ? convertFileSrc(a.path) : null;
@@ -129,6 +130,7 @@ function Item({ a, onEdit }: { a: Attachment; onEdit: () => void }) {
           <div className="ellipsis att-name">{a.name}</div>
           <div className={`small sync-${label.tone}`}>{fmtSize(a.size)} · {label.text}{a.sync_mode !== "auto" && " · 개별 설정"}</div>
         </div>
+        {onPlace && <button className="btn sm" onClick={onPlace} title="커서가 있던 자리(없으면 글 끝)에 넣습니다">본문에 넣기</button>}
         <button className="icon-btn" aria-label="설정" onClick={onEdit}>⋯</button>
       </div>
       {big && src && (
@@ -179,6 +181,37 @@ export function Attachments({ ownerTable, ownerId, ensureOwner, title = "첨부 
       {progress && <div className="faint small" style={{ marginBottom: 6 }}>올리는 중: {progress}</div>}
       {shown.length > 0 && <div className="att-grid">{shown.map((a) => <Item key={a.id} a={a} onEdit={() => setEdit(a.id)} />)}</div>}
       {shown.length > 0 && <div className="faint small" style={{ marginTop: 4 }}>파일을 길게 누르거나 우클릭하면 이름·동기화 여부를 바꿀 수 있습니다.</div>}
+      {current && <AttachmentEditor a={current} limitMb={limit} onClose={() => setEdit(null)} />}
+    </div>
+  );
+}
+
+/**
+ * Files of a record that aren't placed in its text: attached before files went
+ * into the text, or left when their line was deleted. Nothing is lost; each
+ * can be put into the text. Hidden when there are none.
+ */
+export function LooseFiles({ ownerTable, ownerId, texts, hideRoles = ["audio"] }: { ownerTable: Table; ownerId: number | null | undefined; texts: (string | null | undefined)[]; hideRoles?: string[] }) {
+  const { items } = useAttachments(ownerTable, ownerId);
+  const [edit, setEdit] = useState<number | null>(null);
+  const [limit, setLimit] = useState(10);
+  useEffect(() => {
+    api.attSummary().then((s) => setLimit(s.limit_mb)).catch(() => {});
+  }, [items.length]);
+  const used = new Set(texts.flatMap((t) => richFileIds(t)));
+  const loose = items.filter((a) => !used.has(a.id) && !(a.role && hideRoles.includes(a.role)));
+  const current = items.find((a) => a.id === edit);
+  if (!loose.length) return current ? <AttachmentEditor a={current} limitMb={limit} onClose={() => setEdit(null)} /> : null;
+  const place = (a: Attachment) => {
+    if (!ownerId || !insertIntoText(ownerTable, ownerId, a)) toast("넣을 글이 열려 있지 않습니다");
+  };
+  return (
+    <div className="section loose-files">
+      <div className="section-title">
+        <span>본문 밖의 첨부 파일 <span className="faint small">{loose.length}</span></span>
+      </div>
+      <div className="att-grid">{loose.map((a) => <Item key={a.id} a={a} onEdit={() => setEdit(a.id)} onPlace={() => place(a)} />)}</div>
+      <div className="faint small" style={{ marginTop: 4 }}>글 안에 넣지 않은 파일입니다. 새 파일은 글 안에 끌어다 놓거나 붙여 넣으세요.</div>
       {current && <AttachmentEditor a={current} limitMb={limit} onClose={() => setEdit(null)} />}
     </div>
   );

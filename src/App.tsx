@@ -1,5 +1,5 @@
 import { lazy, ReactNode, Suspense, useEffect, useState } from "react";
-import { HashRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { notifyChange } from "./lib/api";
 import { ConfirmHost, toast, Toasts } from "./components/ui";
@@ -10,6 +10,7 @@ import { useWeekStartSetting } from "./lib/weekStart";
 import { AppLogo, DailyIcon } from "./components/icons";
 import ProfileSwitcher from "./components/ProfileSwitcher";
 import { useHiddenNav } from "./lib/navPrefs";
+import { fmtClock, useRecordings } from "./lib/recordings";
 
 // Route-level code splitting keeps startup fast.
 const Memos = lazy(() => import("./pages/Memos"));
@@ -58,6 +59,24 @@ function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }
   );
 }
 
+/** A recording keeps going on other pages: this shows it, and opens its note. */
+function RecordingPill() {
+  const recs = useRecordings();
+  const nav = useNavigate();
+  const loc = useLocation();
+  if (!recs.length) return null;
+  const r = recs[0];
+  if (loc.pathname === `/work/meeting/${r.id}`) return null;
+  return (
+    <button className="rec-pill" onClick={() => nav(`/work/meeting/${r.id}`)} title="녹음 중인 AI 노트 열기">
+      {!r.paused && <span className="rec-dot" />}
+      <b>{r.paused ? "녹음 일시정지" : "녹음 중"}</b>
+      <span className="tabnum">{fmtClock(r.seconds)}</span>
+      {recs.length > 1 && <span className="faint small">외 {recs.length - 1}개</span>}
+    </button>
+  );
+}
+
 function Shell() {
   const [drawer, setDrawer] = useState(false);
   const loc = useLocation();
@@ -97,6 +116,7 @@ function Shell() {
           </Suspense>
         </div>
       </div>
+      <RecordingPill />
     </div>
   );
 }
@@ -116,7 +136,7 @@ function useBackendEvents() {
     offs.push(listen("meeting-updated", () => { notifyChange("meetings"); notifyChange("attachments"); }));
     // Background file sync finished: refresh "동기화됨 / 받는 중" labels.
     offs.push(listen("files-synced", () => notifyChange("attachments")));
-    offs.push(listen("closing-backup", () => toast("드라이브에 백업한 뒤 종료합니다…")));
+    offs.push(listen("switch-backup", () => toast("계정을 바꾸기 전에 지금 계정의 변경을 드라이브에 백업합니다…")));
     offs.push(listen<string>("sync-error", (e) => toast(e.payload, "error")));
     offs.push(listen<number>("notif-imported", (e) => e.payload > 0 && toast(`알림에서 지출 ${e.payload}건을 가계부에 추가했습니다`, "ok")));
     return () => offs.forEach((p) => p.then((f) => f()));

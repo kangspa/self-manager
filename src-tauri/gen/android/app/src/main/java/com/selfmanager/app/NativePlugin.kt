@@ -5,7 +5,14 @@ import android.accounts.AccountManager
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
 import android.provider.Settings
 import android.text.TextUtils
 import androidx.activity.result.ActivityResult
@@ -31,6 +38,13 @@ class AuthArgs {
     var account: String? = null
     /** Show the phone's account chooser first (login: each profile holds its own account). */
     var pickAccount: Boolean = false
+}
+
+@InvokeArg
+class SaveArgs {
+    var path: String = ""
+    var name: String = ""
+    var mime: String = "application/octet-stream"
 }
 
 @InvokeArg
@@ -163,18 +177,71 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(JSObject().put("apps", arr))
     }
 
-    /** Launcher apps (visible without QUERY_ALL_PACKAGES via the <queries> entry in the manifest). */
+    /**
+     * Launcher apps (visible without QUERY_ALL_PACKAGES via the <queries> entry
+     * in the manifest), each with a small icon so the list can be scanned by eye.
+     */
     @Command
     fun listApps(invoke: Invoke) {
         val pm = activity.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
-            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-            .distinctBy { it.first }
-            .filter { it.first != activity.packageName }
+            .distinctBy { it.activityInfo.packageName }
+            .filter { it.activityInfo.packageName != activity.packageName }
+            .map { Triple(it.activityInfo.packageName, it.loadLabel(pm).toString(), it) }
             .sortedBy { it.second }
         val arr = JSArray()
-        for ((pkg, label) in apps) arr.put(JSObject().put("package", pkg).put("label", label))
+        for ((pkg, label, info) in apps) {
+            val o = JSObject().put("package", pkg).put("label", label)
+            iconOf(info.loadIcon(pm))?.let { o.put("icon", it) }
+            arr.put(o)
+        }
         invoke.resolve(JSObject().put("apps", arr))
+    }
+
+    /** A 48px PNG data URL of an app icon, or null if it can't be drawn. */
+    private fun iconOf(d: android.graphics.drawable.Drawable): String? = try {
+        val size = 48
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, size, size)
+        d.draw(Canvas(bmp))
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    } catch (e: Exception) {
+        null
+    }
+
+    // ---------- Files ----------
+
+    /** Copies a file of the app into the phone's Download folder (seen in the Files app). */
+    @Command
+    fun saveToDownloads(invoke: Invoke) {
+        val args = invoke.parseArgs(SaveArgs::class.java)
+        try {
+            val src = java.io.File(args.path)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, args.name)
+                    put(MediaStore.Downloads.MIME_TYPE, args.mime)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val resolver = activity.contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw Exception("다운로드 폴더에 파일을 만들 수 없습니다")
+                resolver.openOutputStream(uri).use { out -> src.inputStream().use { it.copyTo(out!!) } }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                dir.mkdirs()
+                src.copyTo(java.io.File(dir, args.name), overwrite = false)
+            }
+            invoke.resolve(JSObject().put("name", args.name))
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: "파일을 저장하지 못했습니다")
+        }
     }
 }

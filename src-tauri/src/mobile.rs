@@ -91,6 +91,18 @@ pub fn set_watched(app: &AppHandle, packages: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// Copies `path` into the phone's Download folder under `name`.
+pub fn save_to_downloads(app: &AppHandle, path: &std::path::Path, name: &str, mime: &str) -> Result<()> {
+    #[derive(Serialize)]
+    struct A<'a> {
+        path: String,
+        name: &'a str,
+        mime: &'a str,
+    }
+    let _: Value = run(app, "saveToDownloads", A { path: path.to_string_lossy().into_owned(), name, mime })?;
+    Ok(())
+}
+
 pub fn passthrough(app: &AppHandle, cmd: &str) -> Result<Value> {
     match cmd {
         "listApps" | "notificationAccess" | "openNotificationSettings" | "recentPackages" => run(app, cmd, Empty {}),

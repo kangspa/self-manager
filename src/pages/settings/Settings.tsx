@@ -9,7 +9,10 @@ import { DailySection, DiarySection } from "./TemplateSections";
 import AiSection from "./AiSection";
 
 type T = "general" | "sync" | "options" | "notif" | "diary" | "daily" | "ai";
-const TABS: [T, string][] = [["general", "일반"], ["sync", "백업·동기화"], ["options", "선택값 관리"], ["notif", "알림 가계부"], ["diary", "일기 템플릿"], ["daily", "일일 관리 항목"], ["ai", "AI 모델"]];
+// Payment notifications can only be read on the phone: the PC has no such
+// setting, and its ledger shows what the phone recorded (synced).
+const ANDROID = navigator.userAgent.includes("Android");
+const TABS: [T, string][] = ([["general", "일반"], ["sync", "백업·동기화"], ["options", "선택값 관리"], ["notif", "알림 가계부"], ["diary", "일기 템플릿"], ["daily", "일일 관리 항목"], ["ai", "AI 모델"]] as [T, string][]).filter(([k]) => ANDROID || k !== "notif");
 
 export default function Settings() {
   const loc = useLocation();

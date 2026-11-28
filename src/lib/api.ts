@@ -217,6 +217,13 @@ export const api = {
     }
   },
   attOpen: (id: number) => invoke("att_open", { id }),
+  /** Saves a copy: PC asks where; Android puts it in Download. The place, or null if cancelled. */
+  async attExport(a: { id: number; name: string }) {
+    if (isAndroid) return invoke<string>("att_export", { id: a.id, dest: null });
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const dest = await save({ defaultPath: a.name });
+    return dest ? invoke<string>("att_export", { id: a.id, dest }) : null;
+  },
   async attDelete(id: number) {
     await invoke("att_delete", { id });
     notifyChange("attachments");

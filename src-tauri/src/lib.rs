@@ -125,6 +125,9 @@ fn before_switch(app: &AppHandle) {
 #[tauri::command]
 async fn profile_switch(app: AppHandle, id: String) -> Result<()> {
     before_switch(&app);
+    if profiles::active_id(&app) != id {
+        backup_before_leaving(&app).await;
+    }
     profiles::switch(&app, &id).await?;
     after_switch(&app);
     Ok(())
@@ -133,6 +136,7 @@ async fn profile_switch(app: AppHandle, id: String) -> Result<()> {
 #[tauri::command]
 async fn profile_add(app: AppHandle) -> Result<String> {
     before_switch(&app);
+    backup_before_leaving(&app).await;
     let id = profiles::add(&app).await?;
     after_switch(&app);
     Ok(id)
@@ -741,6 +745,29 @@ async fn att_delete(app: AppHandle, id: i64, profile_token: String) -> Result<()
 
 /// Opens an attachment with the system's default app. Stored files are named by
 /// hash, so a copy with the real name (and extension) is opened instead.
+/// Saves a copy of an attachment where the user can find it: to `dest` (the
+/// path picked in the save dialog, desktop) or to the phone's Download folder.
+#[tauri::command]
+async fn att_export(app: AppHandle, id: i64, dest: Option<String>, profile_token: String) -> Result<String> {
+    let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
+    let row = app.state::<AppState>().db.with(|c| db::get(c, "attachments", id))?.ok_or_else(|| Error::msg("첨부 파일이 없습니다"))?;
+    let src = attachments::local_path(&app, row["sha256"].as_str().unwrap_or(""));
+    if !src.exists() {
+        return Err(Error::msg("이 기기에 파일이 없습니다 (동기화되지 않음)"));
+    }
+    let name: String = row["name"].as_str().unwrap_or("file").chars().map(|c| if r#"/\:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    match dest {
+        Some(d) => {
+            std::fs::copy(&src, &d)?;
+            Ok(d)
+        }
+        None => {
+            mobile::save_to_downloads(&app, &src, &name, row["mime"].as_str().unwrap_or("application/octet-stream"))?;
+            Ok(format!("다운로드/{name}"))
+        }
+    }
+}
+
 #[tauri::command]
 async fn att_open(app: AppHandle, id: i64, profile_token: String) -> Result<()> {
     let _profile = hold(app.state::<AppState>().inner(), Some(&profile_token))?;
@@ -825,7 +852,28 @@ fn spawn_auto_load(app: &AppHandle) {
         if let Err(e) = notif_sync_inner(&app) {
             eprintln!("notif sync: {e}");
         }
+        if let Err(e) = google::refresh_picture(&app).await {
+            eprintln!("profile picture: {e}");
+        }
     });
+}
+
+/// The profile being left has edits not on Drive yet: back them up first
+/// (auto backup on), or they would wait until the next time that profile is
+/// opened. Bounded: offline or slow, the switch goes ahead and the edits stay
+/// on this device for the next backup.
+async fn backup_before_leaving(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let cfg = state.device.get();
+    if !(cfg.auto_backup && sync::logged_in(app) && cfg.synced_local_modified != state.db.last_modified().ok()) {
+        return;
+    }
+    let _ = app.emit("switch-backup", ());
+    match tokio::time::timeout(std::time::Duration::from_secs(20), sync::auto_backup(app)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => eprintln!("backup before switch: {e}"),
+        Err(_) => eprintln!("backup before switch: timed out"),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -835,6 +883,10 @@ pub fn run() {
     // (its window comes to the front) and exits before touching any data.
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // Opened again while the closed window was still backing up: stay open.
+        if let Some(state) = app.try_state::<AppState>() {
+            state.closing.store(false, Ordering::SeqCst);
+        }
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.unminimize();
             let _ = w.show();
@@ -892,7 +944,8 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // Desktop: back up to Drive when the window's X is pressed.
+            // Desktop: back up to Drive when the window's X is pressed. The
+            // window goes away at once and the backup finishes out of sight.
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let app = window.app_handle().clone();
                 let state = app.state::<AppState>();
@@ -906,13 +959,16 @@ pub fn run() {
                 }
                 api.prevent_close();
                 state.closing.store(true, Ordering::SeqCst);
-                let _ = app.emit("closing-backup", ());
+                let _ = window.hide();
                 tauri::async_runtime::spawn(async move {
-                    let r = tokio::time::timeout(std::time::Duration::from_secs(30), sync::auto_backup(&app)).await;
+                    let r = tokio::time::timeout(std::time::Duration::from_secs(90), sync::auto_backup(&app)).await;
                     if !matches!(r, Ok(Ok(_))) {
                         eprintln!("auto backup on close failed: {:?}", r.map(|x| x.map_err(|e| e.to_string())));
                     }
-                    app.exit(0);
+                    // Unless the app was opened again meanwhile (see single_instance).
+                    if app.state::<AppState>().closing.load(Ordering::SeqCst) {
+                        app.exit(0);
+                    }
                 });
             }
             // Android: onPause → back up; onResume → load + import notifications.
@@ -988,6 +1044,7 @@ pub fn run() {
             att_cancel,
             att_delete,
             att_open,
+            att_export,
             att_summary,
             att_set_limit,
             files_sync,

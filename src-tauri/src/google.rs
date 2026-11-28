@@ -341,6 +341,34 @@ async fn fetch_user(http: &reqwest::Client, token: &str) -> Result<(String, Opti
     Ok((v["email"].as_str().unwrap_or("").to_string(), picture))
 }
 
+/// Fetches the account picture when the profile has none: accounts signed in
+/// before pictures were shown, or whose first fetch failed. No new login is
+/// needed; the sign-in scopes already return it. Written only into the same,
+/// still signed-in account (a switch or logout meanwhile leaves it alone).
+pub async fn refresh_picture(app: &AppHandle) -> Result<bool> {
+    let state = app.state::<AppState>();
+    let g = state.device.get().google;
+    if !g.authorized || g.email.is_none() || g.picture.is_some() {
+        return Ok(false);
+    }
+    let token = access_token(app).await?;
+    let (email, picture) = fetch_user(&state.http, &token).await?;
+    if picture.is_none() {
+        return Ok(false);
+    }
+    let mut changed = false;
+    state.device.update(|d| {
+        if d.google.session == g.session && d.google.authorized && d.google.email.as_deref() == Some(email.as_str()) && d.google.picture.is_none() {
+            d.google.picture = picture.clone();
+            changed = true;
+        }
+    })?;
+    if changed {
+        let _ = tauri::Emitter::emit(app, "profile-updated", ());
+    }
+    Ok(changed)
+}
+
 /// Returns a valid access token, refreshing (desktop) or asking the native
 /// plugin (Android) when needed.
 pub async fn access_token(app: &AppHandle) -> Result<String> {

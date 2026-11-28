@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { db, Row } from "../../lib/api";
 import { OptionItem, useOptions, useRows } from "../../lib/hooks";
 import { today } from "../../lib/date";
+import { OptionSetsButton } from "../settings/OptionsSection";
 import { Chip, Empty, OptionChip, PageHeader, SearchBox, useDebounced } from "../../components/ui";
 
 function period(g: Row) {
@@ -72,6 +73,7 @@ export default function Goals() {
         actions={
           <>
             <SearchBox value={q} onChange={setQ} />
+            <OptionSetsButton prefix="goal." />
             <button className="btn primary" onClick={() => add()}>+ 새 목표</button>
           </>
         }

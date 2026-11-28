@@ -3,14 +3,34 @@ import { richFirstLine, richPlain } from "../lib/rich";
 import { db, Row } from "../lib/api";
 import { useAutosave, useRows } from "../lib/hooks";
 import { relTs } from "../lib/date";
-import { Attachments } from "../components/Attachments";
+import { LooseFiles } from "../components/Attachments";
 import { confirmDialog, Empty, Modal, PageHeader, SearchBox, useDebounced } from "../components/ui";
 import { RichText } from "../components/RichText";
 
 export const COLORS = ["", "#f56c6c", "#f5a623", "#f2d024", "#3bb273", "#4b8bf5", "#b06cf5"];
 
+const FULL_KEY = "memo.full";
+const loadFull = () => {
+  try {
+    return localStorage.getItem(FULL_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
 function MemoEditor({ memo, onClose }: { memo: Row; onClose: () => void }) {
   const [draft, setDraft, flush] = useAutosave({ title: memo.title ?? "", body: memo.body ?? "" }, (v) => db.upsert("memos", { id: memo.id, ...v }));
+  // Full screen is remembered on this device: whoever writes that way keeps doing so.
+  const [full, setFullState] = useState(loadFull);
+  const setFull = (on: boolean) => {
+    flush();
+    setFullState(on);
+    try {
+      localStorage.setItem(FULL_KEY, on ? "1" : "0");
+    } catch {
+      /* this time only */
+    }
+  };
   const close = () => {
     flush();
     onClose();
@@ -21,21 +41,45 @@ function MemoEditor({ memo, onClose }: { memo: Row; onClose: () => void }) {
       onClose();
     }
   };
+  const head = (
+    <div className="row">
+      <button className="btn sm" onClick={() => db.upsert("memos", { id: memo.id, pinned: memo.pinned ? 0 : 1 })}>{memo.pinned ? "📌 고정 해제" : "📌 고정"}</button>
+      <div className="colors">
+        {COLORS.map((c) => (
+          <span key={c} className={`color-dot ${(memo.color ?? "") === c ? "on" : ""}`} style={{ background: c || "var(--bg-hover)" }} onClick={() => db.upsert("memos", { id: memo.id, color: c || null })} />
+        ))}
+      </div>
+      <button className="btn sm" onClick={() => setFull(!full)} title={full ? "창으로 보기" : "화면 가득 보며 쓰기 (글자 색·배경 색 툴바)"}>{full ? "↙ 창으로 보기" : "⤢ 크게 보기"}</button>
+    </div>
+  );
+  const fields = (
+    <>
+      <input className="title-input" style={{ fontSize: full ? 28 : 20 }} placeholder="제목" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} />
+      <RichText key={full ? "full" : "modal"} value={draft.body} onChange={(v) => setDraft((d) => ({ ...d, body: v }))} placeholder="내용을 입력하세요" autoFocus owner={{ table: "memos", id: memo.id }} toolbar={full} />
+      <LooseFiles ownerTable="memos" ownerId={memo.id} texts={[draft.body]} />
+    </>
+  );
+  if (full) {
+    return (
+      <div className="fullpage" role="dialog" aria-label="메모">
+        <div className="fullpage-head">
+          <button className="btn ghost" onClick={close}>‹ 메모</button>
+          {head}
+          <span className="spacer" />
+          <span className="faint small">자동 저장됨 · {relTs(memo.updated_at)}</span>
+          <button className="btn danger sm" onClick={del}>삭제</button>
+          <button className="btn primary sm" onClick={close}>완료</button>
+        </div>
+        <div className="fullpage-body">{fields}</div>
+      </div>
+    );
+  }
   return (
     <Modal
       open
       onClose={close}
       wide
-      title={
-        <div className="row">
-          <button className="btn sm" onClick={() => db.upsert("memos", { id: memo.id, pinned: memo.pinned ? 0 : 1 })}>{memo.pinned ? "📌 고정 해제" : "📌 고정"}</button>
-          <div className="colors">
-            {COLORS.map((c) => (
-              <span key={c} className={`color-dot ${(memo.color ?? "") === c ? "on" : ""}`} style={{ background: c || "var(--bg-hover)" }} onClick={() => db.upsert("memos", { id: memo.id, color: c || null })} />
-            ))}
-          </div>
-        </div>
-      }
+      title={head}
       footer={
         <>
           <span className="faint small spacer">자동 저장됨 · {relTs(memo.updated_at)}</span>
@@ -44,9 +88,7 @@ function MemoEditor({ memo, onClose }: { memo: Row; onClose: () => void }) {
         </>
       }
     >
-      <input className="title-input" style={{ fontSize: 20 }} placeholder="제목" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} />
-      <RichText value={draft.body} onChange={(v) => setDraft((d) => ({ ...d, body: v }))} placeholder="내용을 입력하세요" autoFocus owner={{ table: "memos", id: memo.id }} />
-      <Attachments ownerTable="memos" ownerId={memo.id} />
+      {fields}
     </Modal>
   );
 }

@@ -61,7 +61,13 @@ export default function Inbox() {
   return (
     <div>
       <div className="notice" style={{ marginBottom: 14 }}>
-        Android에서 <Link to="/settings#notif">설정 › 알림 가계부</Link>에 등록한 앱의 알림을 읽어 지출명·결제 위치·금액·날짜를 자동으로 채웁니다. 금액을 못 찾은 알림은 <b>확인 필요</b>에 남습니다.
+        {isAndroid ? (
+          <>
+            <Link to="/settings#notif">설정 › 알림 가계부</Link>에서 고른 앱의 알림을 읽어 지출명·결제 위치·금액·날짜를 자동으로 채웁니다. 금액을 못 찾은 알림은 <b>확인 필요</b>에 남습니다.
+          </>
+        ) : (
+          <>휴대폰(Android 앱)이 결제 알림에서 읽은 내용이 동기화되어 보입니다. 알림을 읽을 앱은 휴대폰의 설정 › 알림 가계부에서 고릅니다.</>
+        )}
         {isAndroid && access === false && (
           <div className="row" style={{ marginTop: 8 }}>
             <b style={{ color: "var(--danger)" }}>알림 접근 권한이 꺼져 있습니다.</b>
@@ -73,10 +79,10 @@ export default function Inbox() {
         <Tabs value={tab} onChange={setTab} items={[["pending", "확인 필요"], ["parsed", "자동 기록됨"], ["ignored", "무시함"]]} />
         <span className="spacer" />
         {isAndroid && <button className="btn" onClick={() => run(async () => { const n = await api.notifSync(); return n; }, "알림을 가져왔습니다")}>지금 가져오기</button>}
-        <button className="btn" onClick={() => setTest(true)} disabled={!apps.rows.length}>문구로 추가</button>
+        {isAndroid && <button className="btn" onClick={() => setTest(true)} disabled={!apps.rows.length}>문구로 추가</button>}
       </div>
       {rows.length === 0 ? (
-        <Empty>{apps.rows.length ? "알림이 없습니다" : "먼저 설정 › 알림 가계부에서 앱을 등록하세요"}</Empty>
+        <Empty>{apps.rows.length ? "알림이 없습니다" : isAndroid ? "먼저 설정 › 알림 가계부에서 앱을 고르세요" : "휴대폰에서 알림을 읽을 앱을 고르면 여기에 보입니다"}</Empty>
       ) : (
         <div className="list">
           {rows.map((n) => (

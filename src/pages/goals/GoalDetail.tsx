@@ -1,9 +1,10 @@
+import { richPlain } from "../../lib/rich";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { db, Row } from "../../lib/api";
 import { useAutosave, useLoad, useOptions, useRows } from "../../lib/hooks";
 import { addDays, isoWeek, parseYmd, quarterKey, today, weekRange, ym, ymd } from "../../lib/date";
-import { Attachments } from "../../components/Attachments";
+import { LooseFiles } from "../../components/Attachments";
 import { confirmDialog, Empty, Field, OptionSelect, Tabs } from "../../components/ui";
 import { RichText } from "../../components/RichText";
 
@@ -60,17 +61,23 @@ function PeriodNote({ goalId, type, pkey, label, note, isCurrent }: { goalId: nu
     const existing = note?.id ? note : (await db.list("goal_notes", { filters: [{ col: "goal_id", op: "=", value: goalId }, { col: "period_type", op: "=", value: type }, { col: "period_key", op: "=", value: pkey }], limit: 1 }))[0];
     await db.upsert("goal_notes", existing ? { id: existing.id, body: v } : { goal_id: goalId, period_type: type, period_key: pkey, body: v });
   });
+  // A file put into a period with no note yet creates the note first.
+  const ensureNote = async () => {
+    const found = (await db.list("goal_notes", { filters: [{ col: "goal_id", op: "=", value: goalId }, { col: "period_type", op: "=", value: type }, { col: "period_key", op: "=", value: pkey }], limit: 1 }))[0];
+    const row = found ?? (await db.upsert("goal_notes", { goal_id: goalId, period_type: type, period_key: pkey, body }));
+    return { table: "goal_notes" as const, id: row.id as number };
+  };
   return (
     <div className="card" style={{ marginBottom: 8, borderColor: isCurrent ? "var(--accent)" : undefined }}>
       <div className="row" style={{ cursor: "pointer" }} onClick={() => setOpen(!open)}>
         <span>{open ? "▾" : "▸"}</span>
         <b>{label}</b>
         {isCurrent && <span className="badge ok">현재</span>}
-        {!open && body && <span className="faint small ellipsis grow">{body.replace(/[#\-\n]+/g, " ").trim()}</span>}
+        {!open && body && <span className="faint small ellipsis grow">{richPlain(body).replace(/[#\-\n]+/g, " ").trim()}</span>}
         <span className="spacer" />
         {open && !body && <button className="btn sm" onClick={(e) => { e.stopPropagation(); setBody(TEMPLATES[type]); }}>템플릿 넣기</button>}
       </div>
-      {open && <RichText value={body} onChange={setBody} placeholder="이 기간의 계획, 진행, 회고를 적어 보세요" owner={note?.id ? { table: "goal_notes", id: note.id } : undefined} />}
+      {open && <RichText value={body} onChange={setBody} placeholder="이 기간의 계획, 진행, 회고를 적어 보세요" owner={note?.id ? { table: "goal_notes", id: note.id } : undefined} ensureOwner={ensureNote} />}
     </div>
   );
 }
@@ -104,8 +111,8 @@ export default function GoalDetail() {
       </div>
       <input className="title-input" placeholder="목표 이름" value={d.title} onChange={(e) => setD((x) => ({ ...x, title: e.target.value }))} autoFocus={!goal.title} />
       <div className="grid3" style={{ marginTop: 14 }}>
-        <Field label="상태"><OptionSelect options={status} value={goal.status_id} onChange={(v) => set("status_id", v)} /></Field>
-        <Field label="카테고리"><OptionSelect options={cat} value={goal.category_id} onChange={(v) => set("category_id", v)} /></Field>
+        <Field label="상태"><OptionSelect options={status} value={goal.status_id} onChange={(v) => set("status_id", v)} setKey="goal.status" /></Field>
+        <Field label="카테고리"><OptionSelect options={cat} value={goal.category_id} onChange={(v) => set("category_id", v)} setKey="goal.category" /></Field>
         <Field label="시작 날짜"><input type="date" value={goal.start_date ?? ""} onChange={(e) => set("start_date", e.target.value || null)} /></Field>
         <Field label="종료 날짜"><input type="date" value={goal.end_date ?? ""} onChange={(e) => set("end_date", e.target.value || null)} /></Field>
       </div>
@@ -116,7 +123,7 @@ export default function GoalDetail() {
         <div className="section-title">상세 내용</div>
         <RichText value={d.body} onChange={(v) => setD((x) => ({ ...x, body: v }))} placeholder="목표의 배경, 성공 기준, 참고 자료, 포트폴리오로 남길 결과물 등" owner={{ table: "goals", id: gid }} />
       </div>
-      <Attachments ownerTable="goals" ownerId={gid} title="포트폴리오·첨부 파일" />
+      <LooseFiles ownerTable="goals" ownerId={gid} texts={[d.body]} />
       <div className="section">
         <div className="section-title">기간별 기록</div>
         <Tabs<PT> value={ptype} onChange={setPtype} items={[["quarter", "분기별"], ["month", "월별"], ["week", "주간별"]]} />
