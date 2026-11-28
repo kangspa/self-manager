@@ -209,9 +209,9 @@ async fn work_move(state: State<'_, AppState>, id: i64, project_id: Option<i64>,
 }
 
 #[tauri::command]
-async fn expense_dashboard(state: State<'_, AppState>, from: String, to: String, profile_token: String) -> Result<Value> {
+async fn expense_dashboard(state: State<'_, AppState>, from: String, to: String, by_paid: Option<bool>, profile_token: String) -> Result<Value> {
     let _profile = hold(&state, Some(&profile_token))?;
-    state.db.with(|c| queries::expense_dashboard(c, &from, &to))
+    state.db.with(|c| queries::expense_dashboard(c, &from, &to, by_paid.unwrap_or(false)))
 }
 
 #[tauri::command]

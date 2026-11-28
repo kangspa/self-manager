@@ -119,7 +119,7 @@ pub fn parse(rule: &Rule, title: &str, text: &str, posted_at_ms: i64) -> Option<
     }?;
 
     let dt = find_datetime(&full, posted);
-    let purchased_at = dt.map(|(d, _)| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| posted.format("%Y-%m-%d %H:%M").to_string());
+    let purchased_at = dt.map(|(d, _)| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| posted.format("%Y-%m-%d").to_string());
 
     let name = match rule.name_source.as_str() {
         "title" => clean_name(title),
@@ -178,6 +178,7 @@ pub fn ingest(tx: &Connection, items: &[RawNotification]) -> Result<usize> {
                 e.insert("name".into(), json!(p.name));
                 e.insert("amount".into(), json!(p.amount));
                 e.insert("purchased_at".into(), json!(p.purchased_at));
+                e.insert("paid_at".into(), json!(p.purchased_at));
                 e.insert("location_id".into(), json!(location_id));
                 e.insert("status_id".into(), json!(status));
                 e.insert("source".into(), json!("notification"));
@@ -213,7 +214,7 @@ mod tests {
     fn card_approval() {
         let p = parse(&Rule::default(), "KB국민카드", "홍*동님 12,300원 일시불 승인 11/11 13:20 스타벅스강남점 누적 523,000원", ts("2026-11-11 13:21")).unwrap();
         assert_eq!(p.amount, 12300);
-        assert_eq!(p.purchased_at, "2026-11-11 13:20");
+        assert_eq!(p.purchased_at, "2026-11-11");
         assert_eq!(p.name, "스타벅스강남점");
     }
 
@@ -221,7 +222,7 @@ mod tests {
     fn shopping_order_prefers_payment_amount() {
         let p = parse(&Rule::default(), "주문이 완료되었어요", "적립 포인트 120원 · 결제금액 24,900원", ts("2026-11-10 09:00")).unwrap();
         assert_eq!(p.amount, 24900);
-        assert_eq!(p.purchased_at, "2026-11-10 09:00");
+        assert_eq!(p.purchased_at, "2026-11-10");
         assert_eq!(p.name, "주문이 완료되었어요");
     }
 
@@ -238,6 +239,6 @@ mod tests {
     #[test]
     fn december_purchase_seen_in_january() {
         let p = parse(&Rule::default(), "카드", "승인 30,000원 12/31 23:50 편의점", ts("2027-01-01 00:05")).unwrap();
-        assert_eq!(p.purchased_at, "2026-12-31 23:50");
+        assert_eq!(p.purchased_at, "2026-12-31");
     }
 }

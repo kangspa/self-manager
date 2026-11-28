@@ -103,7 +103,8 @@ export function relTs(ms?: number | null) {
   return ymd(new Date(ms));
 }
 
-export const won = (n?: number | null) => `${Math.round(n ?? 0).toLocaleString("ko-KR")}원`;
+// `|| 0` turns -0 (an empty sum in Rust) into 0, so it never shows as "-0원".
+export const won = (n?: number | null) => `${(Math.round(n ?? 0) || 0).toLocaleString("ko-KR")}원`;
 
 // ---- day / week / month views (shared by diary, calendar, work) ----
 export type ViewMode = "day" | "week" | "month";

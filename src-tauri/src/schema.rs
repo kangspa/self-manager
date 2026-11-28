@@ -16,7 +16,7 @@ pub const TABLES: &[TableDef] = &[
     TableDef { name: "tasks", cols: &["title", "note", "due_at", "done_at", "priority"], search: &["title", "note"], has_created: true },
     TableDef {
         name: "expenses",
-        cols: &["name", "url", "location_id", "amount", "purchased_at", "expected_delivery", "item_id", "status_id", "memo", "source", "raw_text", "subscription_id"],
+        cols: &["name", "url", "location_id", "amount", "purchased_at", "paid_at", "expected_delivery", "item_id", "status_id", "memo", "source", "raw_text", "subscription_id"],
         search: &["name", "memo", "url"],
         has_created: true,
     },
@@ -210,6 +210,14 @@ ALTER TABLE work_logs ADD COLUMN kind TEXT NOT NULL DEFAULT 'log';
 ALTER TABLE work_logs ADD COLUMN status TEXT;
 ALTER TABLE work_logs ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_work_parent ON work_logs(parent_id);
+"#,
+    r#"
+-- Expenses: the day it was bought and the day the money leaves (card bills,
+-- instalments, sponsorships), both kept as 'YYYY-MM-DD' only.
+ALTER TABLE expenses ADD COLUMN paid_at TEXT;
+UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10) WHERE length(purchased_at) > 10;
+UPDATE expenses SET paid_at = purchased_at;
+CREATE INDEX idx_expenses_paid ON expenses(paid_at);
 "#,
 ];
 

@@ -722,6 +722,16 @@ pub fn upsert(conn: &Connection, table: &str, row: &Map<String, Value>) -> Resul
     if t.name == "work_logs" {
         normalize_work_tree(conn, row_id)?;
     }
+    if t.name == "expenses" {
+        // Dates only, and a withdrawal day for every writer (notifications,
+        // subscriptions, the assistant): the purchase day unless set apart.
+        conn.execute(
+            "UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10),
+                 paid_at = substr(COALESCE(paid_at, purchased_at), 1, 10)
+             WHERE id = ?1 AND (length(purchased_at) > 10 OR paid_at IS NULL OR length(paid_at) > 10)",
+            [row_id],
+        )?;
+    }
     get(conn, table, row_id)?.ok_or_else(|| Error::msg("row vanished"))
 }
 
@@ -816,6 +826,22 @@ mod tests {
 
     fn row(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn expenses_keep_days_and_a_withdrawal_day() {
+        let dir = tmp("expense");
+        let db = Db::open(dir.join("live.db")).unwrap();
+        let j = |v: Value| row(v);
+        // A writer that still sends a time and no withdrawal day.
+        let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"name": "카드", "amount": 1000, "purchased_at": "2026-11-28 14:30"})))).unwrap();
+        assert_eq!(e["purchased_at"], "2026-11-28");
+        assert_eq!(e["paid_at"], "2026-11-28");
+        let id = e["id"].as_i64().unwrap();
+        // Set apart, it stays apart when the purchase day changes.
+        db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "paid_at": "2026-12-15"})))).unwrap();
+        let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "purchased_at": "2026-11-27"})))).unwrap();
+        assert_eq!((e["purchased_at"].as_str(), e["paid_at"].as_str()), (Some("2026-11-27"), Some("2026-12-15")));
     }
 
     #[test]

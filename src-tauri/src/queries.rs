@@ -116,14 +116,17 @@ fn subscription_monthly_total(conn: &Connection) -> Result<f64> {
         .sum())
 }
 
-pub fn expense_dashboard(conn: &Connection, from: &str, to: &str) -> Result<Value> {
-    // `to` is inclusive; purchased_at is 'YYYY-MM-DD HH:MM', so compare with the next-day bound.
+/// Totals for `from..=to`, counted by the purchase day or, with `by_paid`, by
+/// the day the money leaves.
+pub fn expense_dashboard(conn: &Connection, from: &str, to: &str, by_paid: bool) -> Result<Value> {
+    // `to` is inclusive; compare with the next-day bound (older rows may still carry a time).
     let to_excl = parse_date(to).map(|d| (d + Duration::days(1)).format("%Y-%m-%d").to_string()).unwrap_or_else(|| to.to_string());
     let p = [SqlValue::Text(from.to_string()), SqlValue::Text(to_excl)];
-    let range = "purchased_at >= ?1 AND purchased_at < ?2";
+    let day = if by_paid { "COALESCE(paid_at, purchased_at)" } else { "purchased_at" };
+    let range = format!("{day} >= ?1 AND {day} < ?2");
     let totals = query_json(conn, &format!("SELECT COUNT(*) AS count, COALESCE(SUM(amount),0) AS total FROM expenses WHERE {range}"), &p)?;
-    let by_month = query_json(conn, &format!("SELECT substr(purchased_at,1,7) AS key, SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE {range} GROUP BY key ORDER BY key"), &p)?;
-    let by_day = query_json(conn, &format!("SELECT substr(purchased_at,1,10) AS key, SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE {range} GROUP BY key ORDER BY key"), &p)?;
+    let by_month = query_json(conn, &format!("SELECT substr({day},1,7) AS key, SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE {range} GROUP BY key ORDER BY key"), &p)?;
+    let by_day = query_json(conn, &format!("SELECT substr({day},1,10) AS key, SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE {range} GROUP BY key ORDER BY key"), &p)?;
     let group = |col: &str| {
         query_json(
             conn,
@@ -138,7 +141,7 @@ pub fn expense_dashboard(conn: &Connection, from: &str, to: &str) -> Result<Valu
     let by_item = group("item_id")?;
     let by_location = group("location_id")?;
     let by_status = group("status_id")?;
-    let top = query_json(conn, &format!("SELECT id, name, amount, purchased_at FROM expenses WHERE {range} ORDER BY amount DESC LIMIT 5"), &p)?;
+    let top = query_json(conn, &format!("SELECT id, name, amount, {day} AS day FROM expenses WHERE {range} ORDER BY amount DESC LIMIT 5"), &p)?;
     let today = chrono::Local::now().date_naive();
     let upcoming = subscription_schedule(conn, &today.format("%Y-%m-%d").to_string(), &(today + Duration::days(30)).format("%Y-%m-%d").to_string())?;
     Ok(json!({

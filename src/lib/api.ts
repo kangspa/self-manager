@@ -140,7 +140,7 @@ export const api = {
     notifyChange("work_logs");
     notifyChange("meetings");
   },
-  expenseDashboard: (from: string, to: string) => invoke<any>("expense_dashboard", { from, to }),
+  expenseDashboard: (from: string, to: string, byPaid = false) => invoke<any>("expense_dashboard", { from, to, byPaid }),
   subscriptionSchedule: (from: string, to: string) => invoke<any[]>("subscription_schedule", { from, to }),
   dailyView: (from: string, to: string) => invoke<Record<string, { planned: number[]; logs: Row[] }>>("daily_view", { from, to }),
   notifPreview: (rule: unknown, title: string, text: string) => invoke<Parsed | null>("notif_preview", { rule, title, text }),

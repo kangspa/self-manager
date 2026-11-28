@@ -417,7 +417,7 @@ const SOURCES: &[Source] = &[
         key: "expenses",
         label: "가계부",
         aliases: &["가계부", "지출", "구매", "ledger", "expense"],
-        select: "SELECT e.id, substr(e.purchased_at,1,10) AS d, e.name, e.amount, e.memo, e.url, e.expected_delivery, l.label AS loc, i.label AS item, s.label AS status \
+        select: "SELECT e.id, substr(e.purchased_at,1,10) AS d, substr(e.paid_at,1,10) AS paid, e.name, e.amount, e.memo, e.url, e.expected_delivery, l.label AS loc, i.label AS item, s.label AS status \
                  FROM expenses e LEFT JOIN option_items l ON l.id=e.location_id LEFT JOIN option_items i ON i.id=e.item_id LEFT JOIN option_items s ON s.id=e.status_id",
         search: &["e.name", "e.memo", "e.raw_text", "l.label", "i.label"],
         date: "substr(e.purchased_at,1,10)",
@@ -538,6 +538,9 @@ fn describe(src: &Source, r: &Value) -> String {
             add("구매처", s(r, "loc"));
             add("분류", s(r, "item"));
             add("상태", s(r, "status"));
+            // Only when it differs from the purchase day (card bills, sponsorships).
+            let paid = s(r, "paid");
+            add("출금일", if paid == s(r, "d") { String::new() } else { paid });
             add("도착 예정", s(r, "expected_delivery"));
             add("메모", clip(&rich_plain(&s(r, "memo")), 200));
         }
