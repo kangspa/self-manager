@@ -75,6 +75,18 @@ fn normalize_expense_rows(t: &mut Table) {
     }
 }
 
+/// For a remote copy from an app that can't hold the withdrawal day: its rows
+/// take the local (or else base) withdrawal day, as if unchanged there - which
+/// it was, that app can't edit it.
+fn keep_paid_from(b: &Table, l: &Table, r: &mut Table) {
+    let Some(w) = r.cols.iter().position(|c| c == "paid_at") else {
+        return;
+    };
+    for (id, row) in r.rows.iter_mut() {
+        row[w] = l.rows.get(id).or_else(|| b.rows.get(id)).map(|x| x[w].clone()).unwrap_or(Value::Null);
+    }
+}
+
 /// Natural unique keys per table (must match the UNIQUE constraints in schema.rs).
 fn unique_keys(table: &str) -> &'static [&'static str] {
     match table {
@@ -214,6 +226,9 @@ fn tombstones(conn: &Connection) -> Vec<String> {
 /// All inputs are throwaway copies; they are migrated to the current schema in place.
 /// With conflicts and `prefer == None`, nothing is written and `applied == false`.
 pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path, prefer: Option<Prefer>) -> Result<Report> {
+    // Read before opening migrates it: an app that old uploads its DB without
+    // the withdrawal day, so its empty ones say nothing.
+    let remote_without_paid = db::schema_version(remote)? < crate::schema::EXPENSE_PAID_SINCE;
     let lc = open_conn(local)?;
     let rc = open_conn(remote)?;
     let remote_lm: i64 = rc
@@ -238,6 +253,9 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
         if t.name == "expenses" {
             for x in [&mut b, &mut l, &mut r] {
                 normalize_expense_rows(x);
+            }
+            if remote_without_paid {
+                keep_paid_from(&b, &l, &mut r);
             }
         }
         let (mut rows, c) = merge_table(&l.cols, &b, &l, &r, prefer.unwrap_or(Prefer::Local), &mut rep);
@@ -334,6 +352,27 @@ mod tests {
         let c = Connection::open(d.join("out.db")).unwrap();
         let got: (String, String) = c.query_row("SELECT purchased_at, paid_at FROM expenses WHERE id=9", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(got, ("2026-11-20".to_string(), "2026-12-15".to_string()));
+    }
+
+    /// A copy from an app without the withdrawal day (it drops the column when it
+    /// uploads) keeps the days set here, while its own edits still come in.
+    #[test]
+    fn an_older_app_never_erases_withdrawal_days() {
+        let d = dir("old");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let id = up(&base, "expenses", json!({"name": "card", "amount": 1, "purchased_at": "2026-11-20", "paid_at": "2026-12-15"}));
+        for f in ["b.db", "l.db", "r.db"] {
+            base.snapshot_to(&d.join(f)).unwrap();
+        }
+        // What 0.2.0 uploads: its own (version 3) table, with a new name.
+        let c = Connection::open(d.join("r.db")).unwrap();
+        c.execute_batch("UPDATE expenses SET name = 'renamed'; DROP INDEX IF EXISTS idx_expenses_paid; ALTER TABLE expenses DROP COLUMN paid_at; PRAGMA user_version = 3;").unwrap();
+        drop(c);
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert_eq!(rep.conflicts, 0);
+        let c = Connection::open(d.join("out.db")).unwrap();
+        let got: (String, String) = c.query_row("SELECT name, paid_at FROM expenses WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(got, ("renamed".to_string(), "2026-12-15".to_string()));
     }
 
     /// A withdrawal day set on both sides to different days is a real conflict,

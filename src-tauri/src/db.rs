@@ -75,6 +75,12 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// The schema version a DB file was written with, read without migrating it.
+pub fn schema_version(path: &Path) -> Result<i64> {
+    let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
 pub fn open_conn(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
     configure(&conn)?;

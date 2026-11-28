@@ -304,7 +304,18 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
     // really are the same.
     let remote_changed = remote.local_modified.is_none() || remote.local_modified != synced;
 
-    match (local_changed, remote_changed) {
+    // A copy from an app without the withdrawal day lacks the days set here:
+    // taking it as is would erase them, so it is merged instead (see merge_files).
+    let mut fetched = None;
+    let mut keep_paid = false;
+    if !local_changed && remote_changed && mode != Mode::Backup {
+        let tmp = download_remote(app, &remote).await?;
+        keep_paid = crate::db::schema_version(&tmp)? < crate::schema::EXPENSE_PAID_SINCE
+            && state.db.with(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM expenses WHERE paid_at IS NOT NULL)", [], |r| r.get::<_, bool>(0))?))?;
+        fetched = Some(tmp);
+    }
+
+    match (local_changed || keep_paid, remote_changed) {
         (false, false) => Ok(Some(Outcome::Nothing)),
         (true, false) => {
             // Only this device changed. Auto-load also retries a backup that failed
@@ -320,14 +331,20 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
             if mode == Mode::Backup {
                 return Ok(Some(Outcome::RemoteNewer));
             }
-            let tmp = download_remote(app, &remote).await?;
+            let tmp = match fetched {
+                Some(p) => p,
+                None => download_remote(app, &remote).await?,
+            };
             // Swap only if nothing was typed while downloading.
             let r = adopt(app, &tmp, "drive", Some(local_lm), &tmp, SyncPoint::Swapped);
             let _ = std::fs::remove_file(&tmp);
             Ok(r?.then_some(Outcome::Downloaded))
         }
         (true, true) => {
-            let remote_file = download_remote(app, &remote).await?;
+            let remote_file = match fetched {
+                Some(p) => p,
+                None => download_remote(app, &remote).await?,
+            };
             let base = base_path(app);
             let has_base = base.exists();
             let c = |n: &str| state.cache_dir.join(n);

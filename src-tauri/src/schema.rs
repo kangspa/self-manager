@@ -68,6 +68,10 @@ pub fn table(name: &str) -> Option<&'static TableDef> {
     TABLES.iter().find(|t| t.name == name)
 }
 
+/// First schema version with the expense withdrawal day (`paid_at`). A file of
+/// an older version was written by an app that drops that column.
+pub const EXPENSE_PAID_SINCE: i64 = 4;
+
 /// Ordered list of migrations; `PRAGMA user_version` stores how many were applied.
 pub const MIGRATIONS: &[&str] = &[
     r#"
