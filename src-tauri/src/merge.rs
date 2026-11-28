@@ -78,6 +78,32 @@ fn normalize_expense_rows(t: &mut Table) {
 /// For a remote copy from an app that can't hold the withdrawal day: its rows
 /// take the local (or else base) withdrawal day, as if unchanged there - which
 /// it was, that app can't edit it.
+/// The remote bookings when an app without the timetable wrote that copy last.
+/// It carries the table as it got it from Drive at some point - older or newer
+/// than our base - so its missing rows prove nothing and its rows are only as
+/// new as their `updated_at`. Read as "remote" so that:
+/// - a local row stays (and takes the remote version only if that one is newer);
+/// - a row only there, which we never had, was added elsewhere and comes in;
+/// - a row only there that we had and removed stays removed.
+fn bookings_from_older_app(b: &Table, l: &Table, r: &Table) -> Table {
+    let upd = l.cols.iter().position(|c| c == "updated_at");
+    let newer = |x: &Row, y: &Row| upd.is_some_and(|u| as_ms(&x[u]) > as_ms(&y[u]));
+    let mut rows = HashMap::new();
+    for (id, lr) in &l.rows {
+        let pick = match r.rows.get(id) {
+            Some(rr) if newer(rr, lr) => rr,
+            _ => lr,
+        };
+        rows.insert(*id, pick.clone());
+    }
+    for (id, rr) in &r.rows {
+        if !l.rows.contains_key(id) && !b.rows.contains_key(id) {
+            rows.insert(*id, rr.clone());
+        }
+    }
+    Table { cols: l.cols.clone(), rows }
+}
+
 fn keep_paid_from(b: &Table, l: &Table, r: &mut Table) {
     let Some(w) = r.cols.iter().position(|c| c == "paid_at") else {
         return;
@@ -261,8 +287,7 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
             }
         }
         if t.name == "bookings" && remote_without_bookings {
-            // As if unchanged there: local additions and removals stand.
-            r = Table { cols: l.cols.clone(), rows: l.rows.clone() };
+            r = bookings_from_older_app(&b, &l, &r);
         }
         let (mut rows, c) = merge_table(&l.cols, &b, &l, &r, prefer.unwrap_or(Prefer::Local), &mut rep);
         conflicts += c + dedupe(t.name, &l.cols, &mut rows, prefer.unwrap_or(Prefer::Local));
@@ -407,6 +432,27 @@ mod tests {
         assert_eq!((n, t.as_str()), (1, "m2"));
         // A merge made here is this app's own write again.
         assert!(db::writer_knows_bookings(&d.join("out.db")).unwrap());
+    }
+
+    /// A booking another device added reaches us even through an older app's
+    /// copy (it got the file after that device uploaded).
+    #[test]
+    fn bookings_added_elsewhere_come_through_an_older_app() {
+        let d = dir("book3");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let m = up(&base, "memos", json!({"title": "m"}));
+        base.snapshot_to(&d.join("b.db")).unwrap();
+        base.snapshot_to(&d.join("l.db")).unwrap();
+        // Another device adds a booking and uploads; the older app gets that file and edits a memo.
+        let bk = up(&base, "bookings", json!({"date": "2026-12-01", "start_time": "10:00", "end_time": "11:00", "memo": "lee"}));
+        base.snapshot_to(&d.join("r.db")).unwrap();
+        let c = Connection::open(d.join("r.db")).unwrap();
+        c.execute_batch(&format!("UPDATE memos SET title='m2' WHERE id={m}; UPDATE meta SET value=CAST(CAST(value AS INTEGER)+5 AS TEXT) WHERE key='last_modified';")).unwrap();
+        drop(c);
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert_eq!(rep.conflicts, 0);
+        let n: i64 = Connection::open(d.join("out.db")).unwrap().query_row("SELECT COUNT(*) FROM bookings WHERE id=?1", [bk], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     /// A booking removed by a device that has the timetable is removed.

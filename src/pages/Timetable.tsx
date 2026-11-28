@@ -82,7 +82,12 @@ function DayView({ day, slots, list, onNew, onOpen }: { day: string; slots: Slot
   const toggle = (s: number) => setSel((v) => (v.includes(s) ? v.filter((x) => x !== s) : [...v, s]));
   const free = slots.filter((s) => !bookingAt(list, s)).length;
   // Bookings no slot shows (the hours or the unit changed since): listed apart, never hidden.
-  const outside = list.filter((b) => !slots.some((s) => bookingAt([b], s)));
+  const firstSlot = new Map<number, number>();
+  for (const b of list) {
+    const s = slots.find((x) => bookingAt([b], x));
+    if (s) firstSlot.set(b.id, s.start);
+  }
+  const outside = list.filter((b) => !firstSlot.has(b.id));
   const runs = runsOf(sel, slots);
   if (!slots.length) return <Empty>설정에서 시작·종료 시각을 정해 주세요</Empty>;
   return (
@@ -94,19 +99,23 @@ function DayView({ day, slots, list, onNew, onOpen }: { day: string; slots: Slot
         <span className="faint">빈 타임을 눌러 여러 개 고른 뒤 예약을 추가하세요</span>
       </div>
       <div className="tt-day-list">
-        {slots.map((s, i) => {
+        {slots.map((s) => {
           const b = bookingAt(list, s);
           if (b) {
-            const first = i === 0 || bookingAt(list, slots[i - 1])?.id !== b.id;
+            // Every booking is shown once, in the first slot it touches; a slot
+            // can hold several (bookings made with another unit or hours).
+            const here = list.filter((x) => firstSlot.get(x.id) === s.start);
             return (
-              <div key={s.start} className={`tt-row booked ${first ? "first" : "cont"}`} onClick={() => onOpen(b)}>
+              <div key={s.start} className={`tt-row booked ${here.length ? "first" : "cont"}`} onClick={() => onOpen(here[0] ?? b)}>
                 <span className="tt-time">{toHm(s.start)}</span>
-                <div className="tt-cell">
-                  {first ? (
-                    <>
-                      <span className="tt-range">{b.start_time}~{endLabel(b.end_time)}</span>
-                      <span className="tt-memo">{b.memo || <span className="faint">(메모 없음)</span>}</span>
-                    </>
+                <div className="tt-cell tt-cell-list">
+                  {here.length ? (
+                    here.map((x) => (
+                      <div key={x.id} className="tt-entry" onClick={(e) => (e.stopPropagation(), onOpen(x))}>
+                        <span className="tt-range">{x.start_time}~{endLabel(x.end_time)}</span>
+                        <span className="tt-memo">{x.memo || <span className="faint">(메모 없음)</span>}</span>
+                      </div>
+                    ))
                   ) : (
                     <span className="faint small">〃</span>
                   )}
