@@ -335,6 +335,13 @@ pub struct FileSync {
     pub downloading: Mutex<HashSet<String>>,
 }
 
+impl FileSync {
+    /// A file sync pass is moving files right now.
+    pub fn busy(&self) -> bool {
+        self.pass.try_lock().is_err()
+    }
+}
+
 /// Brings Drive's file store in line with the (already merged) DB:
 /// upload synced files Drive lacks, download synced files this device lacks,
 /// delete Drive files nothing wants synced any more. Only differences move.
@@ -354,24 +361,31 @@ fn wanted_files(app: &AppHandle) -> Result<HashMap<String, (u64, String)>> {
 }
 
 pub async fn sync_files(app: &AppHandle) -> Result<Value> {
-    sync_files_with(app, true).await
+    sync_files_with(app, true, true).await
 }
 
-/// Only pushes this device's new files: before leaving a profile or closing,
-/// where downloads would only make the wait longer (they happen next time).
+/// Only pushes this device's new files: before leaving a profile, where
+/// downloads would only make the wait longer (they happen next time). A pass
+/// already running is not waited for (see below).
 pub async fn upload_files(app: &AppHandle) -> Result<Value> {
-    sync_files_with(app, false).await
+    sync_files_with(app, false, false).await
 }
 
-async fn sync_files_with(app: &AppHandle, downloads: bool) -> Result<Value> {
+/// Closing, out of sight: lets a pass already running finish its uploads (the
+/// process ending would cut them off), then pushes what it didn't cover.
+pub async fn upload_files_before_exit(app: &AppHandle) -> Result<Value> {
+    sync_files_with(app, false, true).await
+}
+
+async fn sync_files_with(app: &AppHandle, downloads: bool, wait: bool) -> Result<Value> {
     use tauri::Emitter;
     let state = app.state::<AppState>();
     // Bound to the active profile: no switch while this runs (see profiles.rs).
     let _profile = crate::hold(&state, None)?;
-    // Upload-only runs while someone waits (a switch, closing): a pass already
-    // running (perhaps a long download) is not waited for. It uploads too, and
-    // a switch is refused while it holds the profile anyway.
-    let _pass = if downloads {
+    // A switch doesn't wait for a pass already running (perhaps a long
+    // download): that pass uploads too, and the switch is refused while it
+    // holds the profile anyway.
+    let _pass = if wait {
         state.file_sync.pass.lock().await
     } else {
         match state.file_sync.pass.try_lock() {

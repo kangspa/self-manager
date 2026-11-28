@@ -961,7 +961,10 @@ pub fn run() {
                     return;
                 }
                 let cfg = state.device.get();
-                let needs = cfg.auto_backup && sync::logged_in(&app) && cfg.synced_local_modified != state.db.last_modified().ok();
+                // Also when nothing changed but a file sync is moving files right
+                // now: quitting would cut its upload off.
+                let syncing_files = state.file_sync.busy();
+                let needs = cfg.auto_backup && sync::logged_in(&app) && (cfg.synced_local_modified != state.db.last_modified().ok() || syncing_files);
                 if !needs {
                     return;
                 }
@@ -969,8 +972,18 @@ pub fn run() {
                 state.closing.store(true, Ordering::SeqCst);
                 let _ = window.hide();
                 tauri::async_runtime::spawn(async move {
-                    // The window is gone already: large files get time to finish.
-                    let r = tokio::time::timeout(std::time::Duration::from_secs(30 * 60), sync::auto_backup(&app)).await;
+                    // The window is gone already: large files get time to finish,
+                    // and a file sync already running is let finish before exit.
+                    let r = tokio::time::timeout(std::time::Duration::from_secs(30 * 60), async {
+                        let backed = sync::auto_backup(&app).await;
+                        if app.state::<AppState>().device.get().auto_backup && sync::logged_in(&app) {
+                            if let Err(e) = attachments::upload_files_before_exit(&app).await {
+                                eprintln!("files on close: {e}");
+                            }
+                        }
+                        backed
+                    })
+                    .await;
                     if !matches!(r, Ok(Ok(_))) {
                         eprintln!("auto backup on close failed: {:?}", r.map(|x| x.map_err(|e| e.to_string())));
                     }
