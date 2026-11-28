@@ -279,7 +279,7 @@ fn system_prompt() -> String {
 1. search_records: 사용자의 기록 검색.\n\
    arguments: {{\"query\": \"검색어\", \"table\": \"...\", \"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}}\n\
    table을 생략하면 모든 기록에서 찾습니다. 어느 기록인지 확실할 때만 table을 넣습니다. from, to는 기간을 물을 때만 넣습니다.\n\
-   table 종류: expenses(가계부 지출·구매), subscriptions(정기 결제·구독), memos(메모), tasks(할 일), events(캘린더 일정), work(업무 기록·일정·단계), projects(업무 프로젝트), meetings(AI 노트·회의록), diary(일기), goals(목표), daily(데일리 체크)\n\
+   table 종류: expenses(가계부 지출·구매), subscriptions(정기 결제·구독), memos(메모), tasks(할 일), events(캘린더 일정), work(업무 기록·일정·단계), projects(업무 프로젝트), meetings(AI 노트·회의록), diary(일기), goals(목표), daily(데일리 체크), bookings(타임테이블 예약)\n\
    검색어는 핵심 낱말만 공백으로 구분해 넣습니다. 한글과 영문 표기가 다를 수 있으면 둘 다 넣습니다 (예: \"아이작 isaac\").\n\
 2. web_search: 인터넷 검색. arguments: {{\"query\": \"검색어\"}}\n\
 3. fetch_page: 웹 페이지 본문 읽기 (검색 결과에 나온 주소나 사용자가 준 주소만). arguments: {{\"url\": \"https://...\"}}",
@@ -505,6 +505,14 @@ const SOURCES: &[Source] = &[
         search: &["p.label", "l.note"],
         date: "l.date",
     },
+    Source {
+        key: "bookings",
+        label: "타임테이블",
+        aliases: &["타임테이블", "예약", "timetable", "booking"],
+        select: "SELECT id, date AS d, start_time, end_time, memo FROM bookings",
+        search: &["memo"],
+        date: "date",
+    },
 ];
 
 /// Words that say nothing about which rows are meant.
@@ -629,6 +637,10 @@ fn describe(src: &Source, r: &Value) -> String {
             add("", if r["done"].as_i64() == Some(1) { "완료".into() } else { String::new() });
             add("값", s(r, "value"));
             add("메모", clip(&rich_plain(&s(r, "note")), 200));
+        }
+        "bookings" => {
+            add("시간", format!("{} ~ {}", s(r, "start_time"), s(r, "end_time")));
+            add("메모", clip(&s(r, "memo"), 200));
         }
         _ => {}
     }

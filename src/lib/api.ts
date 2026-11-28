@@ -32,7 +32,7 @@ export type Query = {
 export type Table =
   | "option_items" | "memos" | "tasks" | "expenses" | "subscriptions" | "notif_apps" | "notif_inbox"
   | "goals" | "goal_notes" | "diary_templates" | "diary_entries" | "daily_presets" | "daily_rules"
-  | "daily_logs" | "events" | "projects" | "work_logs" | "meetings" | "attachments" | "app_settings";
+  | "daily_logs" | "events" | "projects" | "work_logs" | "meetings" | "attachments" | "app_settings" | "bookings";
 
 // ---- change bus: every write notifies hooks that read the same table ----
 const bus = new EventTarget();

@@ -21,6 +21,7 @@ const GoalDetail = lazy(() => import("./pages/goals/GoalDetail"));
 const Diary = lazy(() => import("./pages/Diary"));
 const Daily = lazy(() => import("./pages/Daily"));
 const Calendar = lazy(() => import("./pages/Calendar"));
+const Timetable = lazy(() => import("./pages/Timetable"));
 const Work = lazy(() => import("./pages/work/Work"));
 const MeetingDetail = lazy(() => import("./pages/work/MeetingDetail"));
 const Settings = lazy(() => import("./pages/settings/Settings"));
@@ -35,6 +36,7 @@ export const NAV: [string, ReactNode, string][] = [
   ["/diary", "📔", "일기"],
   ["/daily", <DailyIcon key="daily" />, "일일 관리"],
   ["/calendar", "🗓️", "일정"],
+  ["/timetable", "⏰", "타임테이블"],
   ["/work", "💼", "업무"],
   ["/chat", "💬", "챗봇"],
 ];
@@ -108,6 +110,7 @@ function Shell() {
               <Route path="/diary" element={<Diary />} />
               <Route path="/daily" element={<Daily />} />
               <Route path="/calendar" element={<Calendar />} />
+              <Route path="/timetable" element={<Timetable />} />
               <Route path="/work" element={<Work />} />
               <Route path="/work/meeting/:id" element={<MeetingDetail />} />
               <Route path="/settings" element={<Settings />} />

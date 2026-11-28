@@ -60,7 +60,6 @@ export function PeriodNav({ p, extra }: { p: Period; extra?: ReactNode }) {
         <button className="icon-btn" onClick={() => p.setAnchor(shiftPeriod(p.mode, p.anchor, 1))} aria-label="다음">›</button>
       </div>
       <button className="btn sm" onClick={() => p.setAnchor(today())} disabled={p.anchor === today()}>오늘</button>
-      <input type="date" className="period-date" value={p.anchor} onChange={(e) => e.target.value && p.setAnchor(e.target.value)} aria-label="날짜 선택" />
       {extra && (
         <>
           <span className="spacer" />

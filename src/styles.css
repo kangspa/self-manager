@@ -289,7 +289,6 @@ a.btn { text-decoration: none; color: inherit; }
 /* ---------- day / week / month views ---------- */
 .period-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .period-label { font-size: 16px; min-width: 9em; text-align: center; white-space: nowrap; }
-.period-date { width: 140px; }
 .link-btn { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; color: inherit; font-weight: 650; }
 .link-btn:hover { text-decoration: underline; }
 .week-cols { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
@@ -304,7 +303,6 @@ a.btn { text-decoration: none; color: inherit; }
   .week-cols { grid-template-columns: 1fr; }
   .week-day { min-height: 56px; }
   .period-label { min-width: 0; font-size: 15px; }
-  .period-date { width: 128px; }
 }
 
 /* ---------- checklist ---------- */
@@ -400,7 +398,6 @@ a.btn { text-decoration: none; color: inherit; }
 .split.split-left { grid-template-columns: 220px minmax(0, 1fr); }
 @media (max-width: 760px) {
   .split.split-left { grid-template-columns: 1fr; }
-  .period-date { width: 156px; }
   /* Work cards: the title gets its own full line; dates and chips wrap below. */
   .work-item-head { flex-wrap: wrap; row-gap: 2px; }
   .work-item-head .work-item-title { flex: 1 1 60%; }
@@ -577,3 +574,35 @@ a.profile-item { text-decoration: none; }
 .app-icon { width: 32px; height: 32px; border-radius: 8px; flex: none; }
 .app-icon.blank { background: var(--bg-hover); }
 .app-pick { max-height: 60vh; overflow-y: auto; }
+
+/* ---------- timetable ---------- */
+.tt-day-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.tt-row { display: flex; align-items: stretch; min-height: 38px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.tt-row:last-child { border-bottom: 0; }
+.tt-time { width: 58px; flex: none; padding: 8px 10px; font-size: 13px; color: var(--text-soft); font-variant-numeric: tabular-nums; border-right: 1px solid var(--line); }
+.tt-cell { flex: 1; min-width: 0; padding: 8px 10px; display: flex; align-items: center; gap: 8px; }
+.tt-row.free:hover { background: var(--bg-soft); }
+.tt-row.free.on { background: var(--accent-soft); }
+.tt-check { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; border: 1.5px solid var(--line); border-radius: 4px; font-size: 12px; color: #fff; }
+.tt-row.on .tt-check { background: var(--accent); border-color: var(--accent); }
+.tt-row.booked { background: var(--bg-soft); }
+.tt-row.booked .tt-cell { border-left: 3px solid var(--accent); }
+/* One booking over several slots reads as one block. */
+.tt-row.booked:has(+ .tt-row.booked.cont) { border-bottom-color: transparent; }
+.tt-range { flex: none; font-size: 13px; font-weight: 600; }
+.tt-memo { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tt-bar { position: sticky; bottom: 8px; margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.tt-week-wrap { overflow-x: auto; }
+.tt-week { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 12px; }
+.tt-week th { padding: 6px 4px; font-weight: 600; color: var(--text-soft); white-space: nowrap; }
+.tt-week th.today { text-decoration: underline; text-underline-offset: 3px; }
+.tt-week td.tt-time { width: 52px; padding: 2px 6px; border-right: 0; }
+.tt-cellw { height: 18px; border: 1px solid var(--line); cursor: pointer; }
+.tt-cellw.on { background: var(--accent); }
+.tt-swatch { display: inline-block; width: 14px; height: 10px; vertical-align: middle; border: 1px solid var(--line); border-radius: 2px; }
+.tt-swatch.on { background: var(--accent); border-color: var(--accent); }
+/* Month: a full day (no slot left) against a day with free slots. */
+.tt-day { display: inline-block; align-self: flex-start; margin-top: 2px; padding: 0 6px; border-radius: 4px; font-size: 11.5px; white-space: nowrap; }
+.tt-day.full { background: var(--danger); color: #fff; }
+.tt-day.some { background: var(--ok); color: #fff; }
+.tt-day.open { border: 1px solid var(--ok); color: var(--ok); }

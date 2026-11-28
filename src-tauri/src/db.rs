@@ -70,6 +70,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         let now = now_ms().to_string();
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_modified',?1)", [&now])?;
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('created_at',?1)", [&now])?;
+        mark_writer(&tx)?;
         tx.commit()?;
     }
     Ok(())
@@ -79,6 +80,32 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 pub fn schema_version(path: &Path) -> Result<i64> {
     let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+/// Records that the last change was made by this app: `writer_lm` follows
+/// `last_modified` on every stamp written here. An older app moves only
+/// `last_modified`, so the two differ once it has written - see
+/// [`writer_knows_bookings`].
+pub fn mark_writer(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta(key,value) SELECT 'writer_lm', value FROM meta WHERE key='last_modified'
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Whether the last change to this file was made by an app that has timetable
+/// bookings. One that hasn't keeps the table it found as it was (it can't
+/// read it) - its bookings say nothing about what was added or removed since.
+pub fn writer_knows_bookings(path: &Path) -> Result<bool> {
+    let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < schema::BOOKINGS_SINCE {
+        return Ok(false);
+    }
+    let get = |k: &str| c.query_row("SELECT value FROM meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).optional();
+    Ok(matches!((get("last_modified")?, get("writer_lm")?), (Some(a), Some(b)) if a == b))
 }
 
 pub fn open_conn(path: &Path) -> Result<Connection> {
@@ -100,6 +127,7 @@ fn open_live(path: &Path) -> Result<Connection> {
     let lm: Option<String> = tx.query_row("SELECT value FROM meta WHERE key='last_modified'", [], |r| r.get(0)).optional()?;
     if lm.is_some_and(|v| parse_stamp(&v).is_none()) {
         tx.execute("UPDATE meta SET value=?1 WHERE key='last_modified'", [now_ms().to_string()])?;
+        mark_writer(&tx)?;
     }
     if normalize_work_all(&tx)? + normalize_expenses_all(&tx)? > 0 {
         touch(&tx)?;
@@ -558,6 +586,7 @@ pub fn touch(conn: &Connection) -> Result<()> {
         "INSERT INTO meta(key,value) VALUES('last_modified',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         [next.to_string()],
     )?;
+    mark_writer(conn)?;
     Ok(())
 }
 

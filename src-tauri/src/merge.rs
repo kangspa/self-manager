@@ -229,6 +229,8 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
     // Read before opening migrates it: an app that old uploads its DB without
     // the withdrawal day, so its empty ones say nothing.
     let remote_without_paid = db::schema_version(remote)? < crate::schema::EXPENSE_PAID_SINCE;
+    // Likewise, an app without the timetable leaves its table as it found it.
+    let remote_without_bookings = !db::writer_knows_bookings(remote)?;
     let lc = open_conn(local)?;
     let rc = open_conn(remote)?;
     let remote_lm: i64 = rc
@@ -257,6 +259,10 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
             if remote_without_paid {
                 keep_paid_from(&b, &l, &mut r);
             }
+        }
+        if t.name == "bookings" && remote_without_bookings {
+            // As if unchanged there: local additions and removals stand.
+            r = Table { cols: l.cols.clone(), rows: l.rows.clone() };
         }
         let (mut rows, c) = merge_table(&l.cols, &b, &l, &r, prefer.unwrap_or(Prefer::Local), &mut rep);
         conflicts += c + dedupe(t.name, &l.cols, &mut rows, prefer.unwrap_or(Prefer::Local));
@@ -304,6 +310,7 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
         "UPDATE meta SET value=CAST(?1 AS TEXT) WHERE key='last_modified' AND CAST(value AS INTEGER) < ?1",
         [floor],
     )?;
+    db::mark_writer(&tx)?;
     tx.commit()?;
     // The result is used as a plain file (copied, uploaded): all of it must be in it.
     db::checkpoint_fully(&oc)?;
@@ -366,13 +373,58 @@ mod tests {
         }
         // What 0.2.0 uploads: its own (version 3) table, with a new name.
         let c = Connection::open(d.join("r.db")).unwrap();
-        c.execute_batch("UPDATE expenses SET name = 'renamed'; DROP INDEX IF EXISTS idx_expenses_paid; ALTER TABLE expenses DROP COLUMN paid_at; PRAGMA user_version = 3;").unwrap();
+        c.execute_batch("UPDATE expenses SET name = 'renamed'; DROP INDEX IF EXISTS idx_expenses_paid; ALTER TABLE expenses DROP COLUMN paid_at; DROP TABLE IF EXISTS bookings; PRAGMA user_version = 3;").unwrap();
         drop(c);
         let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
         assert_eq!(rep.conflicts, 0);
         let c = Connection::open(d.join("out.db")).unwrap();
         let got: (String, String) = c.query_row("SELECT name, paid_at FROM expenses WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(got, ("renamed".to_string(), "2026-12-15".to_string()));
+    }
+
+    /// An app without the timetable (0.2.1) writes back the bookings it found:
+    /// those added here since stay, while its own edits still come in.
+    #[test]
+    fn an_older_app_never_drops_bookings() {
+        let d = dir("book");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let m = up(&base, "memos", json!({"title": "m"}));
+        base.snapshot_to(&d.join("b.db")).unwrap();
+        base.snapshot_to(&d.join("r.db")).unwrap();
+        // Added here after the older app last got the file.
+        let bk = up(&base, "bookings", json!({"date": "2026-12-01", "start_time": "10:00", "end_time": "11:00", "memo": "kim"}));
+        base.snapshot_to(&d.join("l.db")).unwrap();
+        // The older app edits a memo: only last_modified moves.
+        let c = Connection::open(d.join("r.db")).unwrap();
+        c.execute_batch(&format!("UPDATE memos SET title='m2' WHERE id={m}; UPDATE meta SET value=CAST(CAST(value AS INTEGER)+5 AS TEXT) WHERE key='last_modified';")).unwrap();
+        drop(c);
+        assert!(!db::writer_knows_bookings(&d.join("r.db")).unwrap());
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert_eq!(rep.conflicts, 0);
+        let c = Connection::open(d.join("out.db")).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM bookings WHERE id=?1", [bk], |r| r.get(0)).unwrap();
+        let t: String = c.query_row("SELECT title FROM memos WHERE id=?1", [m], |r| r.get(0)).unwrap();
+        assert_eq!((n, t.as_str()), (1, "m2"));
+        // A merge made here is this app's own write again.
+        assert!(db::writer_knows_bookings(&d.join("out.db")).unwrap());
+    }
+
+    /// A booking removed by a device that has the timetable is removed.
+    #[test]
+    fn a_removed_booking_stays_removed() {
+        let d = dir("book2");
+        let base = Db::open(d.join("base.db")).unwrap();
+        let bk = up(&base, "bookings", json!({"date": "2026-12-01", "start_time": "10:00", "end_time": "11:00"}));
+        for f in ["b.db", "l.db", "r.db"] {
+            base.snapshot_to(&d.join(f)).unwrap();
+        }
+        let r = Db::open(d.join("r.db")).unwrap();
+        r.write(|tx| db::delete(tx, "bookings", bk)).unwrap();
+        drop(r);
+        assert!(db::writer_knows_bookings(&d.join("r.db")).unwrap());
+        merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        let n: i64 = Connection::open(d.join("out.db")).unwrap().query_row("SELECT COUNT(*) FROM bookings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     /// A withdrawal day set on both sides to different days is a real conflict,

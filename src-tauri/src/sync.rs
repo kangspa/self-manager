@@ -304,14 +304,16 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
     // really are the same.
     let remote_changed = remote.local_modified.is_none() || remote.local_modified != synced;
 
-    // A copy from an app without the withdrawal day lacks the days set here:
-    // taking it as is would erase them, so it is merged instead (see merge_files).
+    // A copy last written by an older app lacks what it can't hold (withdrawal
+    // days, timetable bookings): taking it as is would erase those made here,
+    // so it is merged instead, which keeps them (see merge_files).
     let mut fetched = None;
-    let mut keep_paid = false;
+    let mut keep_local = false;
     if !local_changed && remote_changed && mode != Mode::Backup {
         let tmp = download_remote(app, &remote).await?;
-        keep_paid = crate::db::schema_version(&tmp)? < crate::schema::EXPENSE_PAID_SINCE
-            && state.db.with(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM expenses WHERE paid_at IS NOT NULL)", [], |r| r.get::<_, bool>(0))?))?;
+        let has = |sql: &'static str| state.db.with(|c| Ok(c.query_row(sql, [], |r| r.get::<_, bool>(0))?));
+        keep_local = (crate::db::schema_version(&tmp)? < crate::schema::EXPENSE_PAID_SINCE && has("SELECT EXISTS(SELECT 1 FROM expenses WHERE paid_at IS NOT NULL)")?)
+            || (!crate::db::writer_knows_bookings(&tmp)? && has("SELECT EXISTS(SELECT 1 FROM bookings)")?);
         fetched = Some(tmp);
     }
 
@@ -320,7 +322,7 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
     // a local change until a backup or a manual sync sends it.
     let upload_after_merge = mode != Mode::Load || cfg.auto_backup;
 
-    match (local_changed || keep_paid, remote_changed) {
+    match (local_changed || keep_local, remote_changed) {
         (false, false) => Ok(Some(Outcome::Nothing)),
         (true, false) => {
             // Only this device changed. Auto-load also retries a backup that failed

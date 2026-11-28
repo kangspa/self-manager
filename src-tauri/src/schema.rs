@@ -62,6 +62,8 @@ pub const TABLES: &[TableDef] = &[
     TableDef { name: "attachments", cols: &["owner_table", "owner_id", "role", "name", "mime", "size", "sha256", "sync_mode"], search: &["name"], has_created: true },
     // Settings shared by all devices (merged like any other row, unique by key).
     TableDef { name: "app_settings", cols: &["key", "value"], search: &[], has_created: false },
+    // Timetable: booked time ranges of a day ('HH:MM', end exclusive).
+    TableDef { name: "bookings", cols: &["date", "start_time", "end_time", "memo"], search: &["memo"], has_created: true },
 ];
 
 pub fn table(name: &str) -> Option<&'static TableDef> {
@@ -71,6 +73,8 @@ pub fn table(name: &str) -> Option<&'static TableDef> {
 /// First schema version with the expense withdrawal day (`paid_at`). A file of
 /// an older version was written by an app that drops that column.
 pub const EXPENSE_PAID_SINCE: i64 = 4;
+/// First schema version with timetable bookings.
+pub const BOOKINGS_SINCE: i64 = 6;
 
 /// Ordered list of migrations; `PRAGMA user_version` stores how many were applied.
 pub const MIGRATIONS: &[&str] = &[
@@ -228,6 +232,14 @@ CREATE INDEX idx_expenses_paid ON expenses(paid_at);
 -- filled in by the previous step were never chosen by anyone: empty them, so
 -- moving the purchase day moves the withdrawal day too, without editing it.
 UPDATE expenses SET paid_at = NULL WHERE paid_at = purchased_at;
+"#,
+    r#"
+-- Timetable bookings: one or more slots of a day with a memo (who, what).
+CREATE TABLE bookings (
+  id INTEGER PRIMARY KEY, date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+  memo TEXT, created_at INTEGER, updated_at INTEGER
+);
+CREATE INDEX idx_bookings_date ON bookings(date, start_time);
 "#,
 ];
 
