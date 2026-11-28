@@ -220,9 +220,9 @@ UPDATE expenses SET paid_at = purchased_at;
 CREATE INDEX idx_expenses_paid ON expenses(paid_at);
 "#,
     r#"
--- A withdrawal day is stored only when it differs from the purchase day; empty
--- means "the purchase day". Moving the purchase day then never edits it, so
--- sync can't mistake that for a withdrawal-day change.
+-- An empty withdrawal day means "not set apart: the purchase day". The days
+-- filled in by the previous step were never chosen by anyone: empty them, so
+-- moving the purchase day moves the withdrawal day too, without editing it.
 UPDATE expenses SET paid_at = NULL WHERE paid_at = purchased_at;
 "#,
 ];

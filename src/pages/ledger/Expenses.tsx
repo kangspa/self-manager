@@ -63,10 +63,8 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
     } else flush();
     onClose();
   };
-  // An empty withdrawal day follows the purchase day; one set apart stays put
-  // (setting it back to the purchase day empties it again).
-  const setBought = (v: string) => setD((x) => ({ ...x, purchased_at: v, paid_at: x.paid_at && x.paid_at.slice(0, 10) !== v ? x.paid_at : null }));
-  const setPaid = (v: string) => setD((x) => ({ ...x, paid_at: v === (x.purchased_at ?? "").slice(0, 10) ? null : v }));
+  // An empty withdrawal day follows the purchase day; a chosen one stays as
+  // chosen (even on the purchase day) until "구매 날짜와 같게" empties it.
   return (
     <Modal
       open
@@ -90,10 +88,19 @@ export function ExpenseEditor({ row, onClose }: { row: Partial<Row>; onClose: ()
           <input type="number" inputMode="numeric" value={d.amount ?? ""} onChange={(e) => set("amount", e.target.value === "" ? null : Number(e.target.value))} />
         </Field>
         <Field label="구매 날짜">
-          <input type="date" value={(d.purchased_at ?? "").slice(0, 10)} onChange={(e) => e.target.value && setBought(e.target.value)} />
+          <input type="date" value={(d.purchased_at ?? "").slice(0, 10)} onChange={(e) => e.target.value && set("purchased_at", e.target.value)} />
         </Field>
-        <Field label="출금 날짜">
-          <input type="date" value={paidDay(d)} onChange={(e) => e.target.value && setPaid(e.target.value)} />
+        <Field
+          label="출금 날짜"
+          hint={
+            d.paid_at ? (
+              <button type="button" className="link-btn" onClick={(e) => (e.preventDefault(), set("paid_at", null))}>구매 날짜와 같게</button>
+            ) : (
+              "구매 날짜를 따라갑니다"
+            )
+          }
+        >
+          <input type="date" value={paidDay(d)} onChange={(e) => e.target.value && set("paid_at", e.target.value)} />
         </Field>
         <Field label="결제 위치">
           <OptionSelect options={o.loc} value={d.location_id} onChange={(v) => set("location_id", v)} setKey="expense.location" />
@@ -192,7 +199,7 @@ export default function Expenses() {
                   <td className="meta">
                     {md(basis === "paid" ? paidDay(r) : r.purchased_at)}
                     {/* The other day, when the two differ (card bills, sponsorships). */}
-                    {r.paid_at && (
+                    {r.paid_at && r.paid_at.slice(0, 10) !== (r.purchased_at ?? "").slice(0, 10) && (
                       <div className="faint small">{basis === "paid" ? `구매 ${md(r.purchased_at)}` : `출금 ${md(r.paid_at)}`}</div>
                     )}
                   </td>

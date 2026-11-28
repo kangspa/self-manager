@@ -102,17 +102,17 @@ fn open_live(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Expense days are 'YYYY-MM-DD', and the withdrawal day is kept only when it
-/// differs from the purchase day (empty = the purchase day). Rows written some
-/// other way (an older app, a restored file) are fixed here; fixed rows get a
-/// new `updated_at`, as in [`normalize_work_all`].
+/// Expense days are 'YYYY-MM-DD' (older writers added a time). An empty
+/// withdrawal day means the purchase day; one that was set is kept as set,
+/// even on the purchase day. Rows written some other way (an older app, a
+/// restored file) are fixed here; fixed rows get a new `updated_at`, as in
+/// [`normalize_work_all`].
 pub fn normalize_expenses_all(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(&format!("UPDATE expenses SET {EXPENSE_DAYS}, updated_at = ?1 WHERE {EXPENSE_DAYS_OFF}"), [now_ms()])?)
 }
 
-const EXPENSE_DAYS: &str = "purchased_at = substr(purchased_at, 1, 10),
-    paid_at = CASE WHEN substr(paid_at, 1, 10) = substr(purchased_at, 1, 10) THEN NULL ELSE substr(paid_at, 1, 10) END";
-const EXPENSE_DAYS_OFF: &str = "(length(purchased_at) > 10 OR length(paid_at) > 10 OR substr(paid_at, 1, 10) = substr(purchased_at, 1, 10))";
+const EXPENSE_DAYS: &str = "purchased_at = substr(purchased_at, 1, 10), paid_at = substr(paid_at, 1, 10)";
+const EXPENSE_DAYS_OFF: &str = "(length(purchased_at) > 10 OR length(paid_at) > 10)";
 
 /// SQL for a column in a filter or an order. `paid_day` on expenses is the day
 /// the money leaves: the withdrawal day, or the purchase day when none is set.
@@ -745,8 +745,7 @@ pub fn upsert(conn: &Connection, table: &str, row: &Map<String, Value>) -> Resul
         normalize_work_tree(conn, row_id)?;
     }
     if t.name == "expenses" {
-        // Dates only, whoever writes (notifications, subscriptions, the
-        // assistant), and a withdrawal day only when it is set apart.
+        // Dates only, whoever writes (notifications, subscriptions, the assistant).
         conn.execute(&format!("UPDATE expenses SET {EXPENSE_DAYS} WHERE id = ?1 AND {EXPENSE_DAYS_OFF}"), [row_id])?;
     }
     get(conn, table, row_id)?.ok_or_else(|| Error::msg("row vanished"))
@@ -871,12 +870,16 @@ mod tests {
         // A writer that still sends a time and no withdrawal day.
         let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"name": "카드", "amount": 1000, "purchased_at": "2026-11-28 14:30"})))).unwrap();
         assert_eq!(e["purchased_at"], "2026-11-28");
-        assert!(e["paid_at"].is_null(), "the same day is kept as empty");
+        assert!(e["paid_at"].is_null(), "not set apart: follows the purchase day");
         let id = e["id"].as_i64().unwrap();
         // Set apart, it stays apart when the purchase day changes.
         db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "paid_at": "2026-12-15"})))).unwrap();
         let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "purchased_at": "2026-11-27"})))).unwrap();
         assert_eq!((e["purchased_at"].as_str(), e["paid_at"].as_str()), (Some("2026-11-27"), Some("2026-12-15")));
+        // Moving the purchase day onto it and off again keeps it: it was chosen.
+        db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "purchased_at": "2026-12-15"})))).unwrap();
+        let e = db.write(|tx| upsert(tx, "expenses", &j(serde_json::json!({"id": id, "purchased_at": "2026-11-26"})))).unwrap();
+        assert_eq!(e["paid_at"], "2026-12-15");
     }
 
     #[test]

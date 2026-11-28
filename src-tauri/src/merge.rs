@@ -58,11 +58,9 @@ fn load(conn: &Connection, table: &str, cols: Option<&[String]>) -> Result<Table
     Ok(Table { cols, rows })
 }
 
-/// Applies the expense day rules of [`db::normalize_expenses_all`] to loaded
-/// rows (days only; a withdrawal day equal to the purchase day is empty). Done
-/// to the base, local and remote copies alike before comparing, so copies
-/// written by different app versions compare by meaning: a repair, or a
-/// withdrawal day that only followed the purchase day, is never an edit.
+/// Applies the expense day rules of [`db::normalize_expenses_all`] (days only,
+/// no time) to loaded rows. Done to the base, local and remote copies alike
+/// before comparing, so a repair one device made by itself is never an edit.
 fn normalize_expense_rows(t: &mut Table) {
     let (Some(p), Some(w)) = (t.cols.iter().position(|c| c == "purchased_at"), t.cols.iter().position(|c| c == "paid_at")) else {
         return;
@@ -73,8 +71,7 @@ fn normalize_expense_rows(t: &mut Table) {
     };
     for row in t.rows.values_mut() {
         row[p] = day(&row[p]);
-        let paid = day(&row[w]);
-        row[w] = if paid == row[p] { Value::Null } else { paid };
+        row[w] = day(&row[w]);
     }
 }
 
@@ -371,7 +368,7 @@ mod tests {
         }
         let phone = Db::open(d.join("phone.db")).unwrap();
         let pc = Db::open(d.join("pc.db")).unwrap();
-        up(&phone, "expenses", json!({"id": id, "purchased_at": "2026-11-22", "paid_at": "2026-11-22"}));
+        up(&phone, "expenses", json!({"id": id, "purchased_at": "2026-11-22"}));
         up(&pc, "expenses", json!({"id": id, "paid_at": "2026-12-15"}));
         phone.snapshot_to(&d.join("l.db")).unwrap();
         pc.snapshot_to(&d.join("r.db")).unwrap();
