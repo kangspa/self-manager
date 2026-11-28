@@ -95,6 +95,12 @@ pub fn mark_writer(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A `meta` value of a DB file, read without migrating it.
+pub fn meta_of(path: &Path, key: &str) -> Result<Option<String>> {
+    let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(c.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get::<_, String>(0)).optional()?)
+}
+
 /// Whether the last change to this file was made by an app that has timetable
 /// bookings. One that hasn't keeps the table it found as it was (it can't
 /// read it) - its bookings say nothing about what was added or removed since.
