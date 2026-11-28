@@ -315,6 +315,10 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
         fetched = Some(tmp);
     }
 
+    // Merged only to keep those days, this is still a download: it goes back up
+    // only where a download alone would (not on auto-load without auto-backup).
+    let upload_after_merge = local_changed || mode != Mode::Load || cfg.auto_backup;
+
     match (local_changed || keep_paid, remote_changed) {
         (false, false) => Ok(Some(Outcome::Nothing)),
         (true, false) => {
@@ -380,7 +384,9 @@ async fn reconcile_once(app: &AppHandle, mode: Mode, interactive: bool, prefer: 
             if !swapped? {
                 return Ok(None); // edited during the merge: redo with the new edit
             }
-            upload_live(app).await?;
+            if upload_after_merge {
+                upload_live(app).await?;
+            }
             Ok(Some(Outcome::Merged { from_local: rep.from_local, from_remote: rep.from_remote, conflicts: rep.conflicts }))
         }
     }
