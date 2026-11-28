@@ -253,6 +253,8 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
     // together (one device turns a phase into a log, the other files an item
     // under it): restore the work tree rules on the merged result.
     db::normalize_work_all(&tx)?;
+    // Rows from a device still on an app without the withdrawal day.
+    db::normalize_expenses_all(&tx)?;
     touch(&tx)?;
     // The merged stamp must also pass the remote one: the remote stamp becomes
     // the sync point, and stamps only move forward from there.

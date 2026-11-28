@@ -95,11 +95,25 @@ fn open_live(path: &Path) -> Result<Connection> {
     if lm.is_some_and(|v| parse_stamp(&v).is_none()) {
         tx.execute("UPDATE meta SET value=?1 WHERE key='last_modified'", [now_ms().to_string()])?;
     }
-    if normalize_work_all(&tx)? > 0 {
+    if normalize_work_all(&tx)? + normalize_expenses_all(&tx)? > 0 {
         touch(&tx)?;
     }
     tx.commit()?;
     Ok(conn)
+}
+
+/// Expense days are 'YYYY-MM-DD', and every expense has a withdrawal day (the
+/// purchase day unless set apart). Rows written by an app from before the
+/// withdrawal day - into a file that already has the column, or through a
+/// merge - are fixed here. Fixed rows get a new `updated_at`, as in
+/// [`normalize_work_all`].
+pub fn normalize_expenses_all(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE expenses SET purchased_at = substr(purchased_at, 1, 10),
+             paid_at = substr(COALESCE(paid_at, purchased_at), 1, 10), updated_at = ?1
+         WHERE length(purchased_at) > 10 OR (paid_at IS NULL AND purchased_at IS NOT NULL) OR length(paid_at) > 10",
+        [now_ms()],
+    )?)
 }
 
 /// Moves a work item to another project with everything it holds - a phase's
@@ -826,6 +840,20 @@ mod tests {
 
     fn row(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn opening_fills_withdrawal_days_left_by_an_older_app() {
+        let dir = tmp("expense-open");
+        let path = dir.join("live.db");
+        drop(Db::open(path.clone()).unwrap());
+        // What 0.2.0 writes into a file that already has the column.
+        let c = Connection::open(&path).unwrap();
+        c.execute("INSERT INTO expenses(id, name, amount, purchased_at, source) VALUES (7, 'old', 1, '2026-11-20 10:00', 'manual')", []).unwrap();
+        drop(c);
+        let db = Db::open(path).unwrap();
+        let r = db.with(|c| get(c, "expenses", 7)).unwrap().unwrap();
+        assert_eq!((r["purchased_at"].as_str(), r["paid_at"].as_str()), (Some("2026-11-20"), Some("2026-11-20")));
     }
 
     #[test]
