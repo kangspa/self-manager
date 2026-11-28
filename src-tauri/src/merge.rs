@@ -58,6 +58,24 @@ fn load(conn: &Connection, table: &str, cols: Option<&[String]>) -> Result<Table
     Ok(Table { cols, rows })
 }
 
+/// Applies the expense day rules of [`db::normalize_expenses_all`] to loaded
+/// rows. Done to the base, local and remote copies alike before comparing, so a
+/// value one device filled in by itself never counts as an edit - and never
+/// conflicts with a withdrawal day someone set on another device.
+fn normalize_expense_rows(t: &mut Table) {
+    let (Some(p), Some(w)) = (t.cols.iter().position(|c| c == "purchased_at"), t.cols.iter().position(|c| c == "paid_at")) else {
+        return;
+    };
+    let day = |v: &Value| match v {
+        Value::Text(s) if s.len() > 10 => Value::Text(s.chars().take(10).collect()),
+        v => v.clone(),
+    };
+    for row in t.rows.values_mut() {
+        row[p] = day(&row[p]);
+        row[w] = if row[w] == Value::Null { row[p].clone() } else { day(&row[w]) };
+    }
+}
+
 /// Natural unique keys per table (must match the UNIQUE constraints in schema.rs).
 fn unique_keys(table: &str) -> &'static [&'static str] {
     match table {
@@ -212,12 +230,17 @@ pub fn merge_files(base: Option<&Path>, local: &Path, remote: &Path, out: &Path,
     let mut merged: Vec<(&str, Vec<String>, Vec<Merged>)> = Vec::new();
     let mut conflicts = 0;
     for t in TABLES {
-        let l = load(&lc, t.name, None)?;
-        let r = load(&rc, t.name, Some(&l.cols))?;
-        let b = match &bc {
+        let mut l = load(&lc, t.name, None)?;
+        let mut r = load(&rc, t.name, Some(&l.cols))?;
+        let mut b = match &bc {
             Some(c) => load(c, t.name, Some(&l.cols))?,
             None => Table { cols: l.cols.clone(), rows: HashMap::new() },
         };
+        if t.name == "expenses" {
+            for x in [&mut b, &mut l, &mut r] {
+                normalize_expense_rows(x);
+            }
+        }
         let (mut rows, c) = merge_table(&l.cols, &b, &l, &r, prefer.unwrap_or(Prefer::Local), &mut rep);
         conflicts += c + dedupe(t.name, &l.cols, &mut rows, prefer.unwrap_or(Prefer::Local));
         merged.push((t.name, l.cols, rows));
@@ -290,6 +313,28 @@ mod tests {
         let c = Connection::open(p).unwrap();
         let mut s = c.prepare("SELECT id, COALESCE(title,''), COALESCE(body,'') FROM memos ORDER BY id").unwrap();
         s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|x| x.unwrap()).collect()
+    }
+
+    /// A withdrawal day one device filled in by itself (left empty by an older
+    /// app) gives way to one set on the other device, without a conflict.
+    #[test]
+    fn filled_withdrawal_day_never_conflicts_with_a_set_one() {
+        let d = dir("paid");
+        drop(Db::open(d.join("b.db")).unwrap());
+        let c = Connection::open(d.join("b.db")).unwrap();
+        c.execute("INSERT INTO expenses(id, name, amount, purchased_at, source) VALUES (9, 'card', 1, '2026-11-20 10:00', 'manual')", []).unwrap();
+        drop(c);
+        std::fs::copy(d.join("b.db"), d.join("l.db")).unwrap();
+        std::fs::copy(d.join("b.db"), d.join("r.db")).unwrap();
+        drop(Db::open(d.join("l.db")).unwrap()); // fills it in on opening
+        let r = Db::open(d.join("r.db")).unwrap();
+        up(&r, "expenses", json!({"id": 9, "paid_at": "2026-12-15"}));
+        drop(r);
+        let rep = merge_files(Some(&d.join("b.db")), &d.join("l.db"), &d.join("r.db"), &d.join("out.db"), None).unwrap();
+        assert_eq!(rep.conflicts, 0);
+        let c = Connection::open(d.join("out.db")).unwrap();
+        let got: (String, String) = c.query_row("SELECT purchased_at, paid_at FROM expenses WHERE id=9", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(got, ("2026-11-20".to_string(), "2026-12-15".to_string()));
     }
 
     /// Scenario from the spec: phone edits (backup failed), PC edits and backs up.
